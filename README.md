@@ -465,6 +465,201 @@ docker-compose down -v
 
 ---
 
+## Quickstart — Teammate Setup (Mac)
+
+> Follow these steps exactly. Takes about 20-30 minutes on first run.
+
+### Prerequisites
+- Python 3.11+ — install via [Homebrew](https://brew.sh): `brew install python@3.11`
+- Docker Desktop — [docker.com](https://www.docker.com/products/docker-desktop/) — **must be running before Step 5**
+- Git — comes with Xcode Command Line Tools: `xcode-select --install`
+
+---
+
+### Step 1 — Clone the repo
+
+Open Terminal and run:
+```bash
+git clone https://github.com/notzdean/MLEgroup.git
+cd MLEgroup
+```
+
+---
+
+### Step 2 — Place data files
+
+Data files are NOT in the repo (gitignored). Get them from the shared Google Drive and place them in `data/bronze/`:
+
+```
+data/bronze/raw_sgcharts_dengue.csv
+data/bronze/raw_mss_weather_2013_2020.csv
+data/bronze/raw_mss_stations_list_mss.csv
+data/bronze/raw_singstat_pop_17560.csv
+data/bronze/raw_MasterPlan2019SubzoneBoundaryNoSeaGEOJSON.geojson
+```
+
+Create the folders if they don't exist:
+```bash
+mkdir -p data/bronze data/silver data/gold
+```
+
+---
+
+### Step 3 — Create a virtual environment (recommended)
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+You'll need to run `source venv/bin/activate` each time you open a new Terminal session.
+
+---
+
+### Step 4 — Install Python dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+If you're on an **Apple Silicon Mac (M1/M2/M3)**, geopandas may need extra steps:
+```bash
+brew install gdal
+pip install geopandas pyarrow
+pip install -r requirements.txt
+```
+
+---
+
+### Step 5 — Run the pipeline
+
+Run in this exact order:
+
+```bash
+# Bronze ingestion
+python3 pipeline/ingest_sgcharts.py
+python3 pipeline/ingest_mss_weather.py
+python3 pipeline/ingest_population.py
+python3 pipeline/ingest_geodata.py
+
+# Silver cleaning
+python3 pipeline/preprocess.py
+
+# Gold features + label
+python3 pipeline/feature_engineering.py
+
+# Train model (~5 minutes)
+python3 model/train.py
+
+# Evaluate + promote
+python3 model/evaluate.py
+```
+
+---
+
+### Step 6 — Create `.env` file
+
+```bash
+cat > .env << 'EOF'
+POSTGRES_USER=dengue
+POSTGRES_PASSWORD=dengue
+POSTGRES_DB=dengue
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+DATABASE_URL=postgresql://dengue:dengue@postgres:5432/dengue
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_URL=redis://redis:6379/0
+MLFLOW_TRACKING_URI=http://mlflow:5000
+MLFLOW_BACKEND_STORE_URI=postgresql://dengue:dengue@postgres:5432/mlflow
+MLFLOW_ARTIFACT_ROOT=/mlflow/artifacts
+AIRFLOW__CORE__EXECUTOR=LocalExecutor
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql://dengue:dengue@postgres:5432/airflow
+AIRFLOW__CORE__FERNET_KEY=yLNRaItTnErXtgko8KX3w7l2ZceMT-O571vgP2OJAQk=
+AIRFLOW__WEBSERVER__SECRET_KEY=3cb72cfa6f6c28fd3fc2784ea934583e0a5aed5ce61d8bb85cfa109d5dc37d4c
+AIRFLOW_ADMIN_USER=airflow
+AIRFLOW_ADMIN_PASSWORD=airflow
+FASTAPI_HOST=0.0.0.0
+FASTAPI_PORT=8000
+ALERT_THRESHOLD=0.6
+MODEL_NAME=dengue_cluster_model
+MODEL_STAGE=Production
+EOF
+```
+
+---
+
+### Step 7 — Start Docker stack
+
+Make sure Docker Desktop is open and running, then:
+
+```bash
+docker-compose up -d
+```
+
+First run downloads images and takes ~5 minutes.
+
+**Important — on first boot only**, create the MLflow and Airflow databases:
+```bash
+docker exec dengue_postgres psql -U dengue -d dengue -c "CREATE DATABASE mlflow;"
+docker exec dengue_postgres psql -U dengue -d dengue -c "CREATE DATABASE airflow;"
+docker-compose restart mlflow airflow
+```
+
+Wait 2-3 minutes, then restart FastAPI:
+```bash
+docker-compose restart fastapi
+```
+
+---
+
+### Step 8 — Verify
+
+```bash
+curl http://localhost:8000/health
+```
+
+Expected: `{"status":"ok","model":"lightgbm","redis":true,"postgres":true}`
+
+---
+
+### Step 9 — Open the dashboards
+
+| Dashboard | URL |
+|---|---|
+| NEA Risk Map + Analytics | http://localhost:8000/dashboard |
+| CDA Mobile Emulator | http://localhost:8000/mobile |
+| FastAPI docs | http://localhost:8000/docs |
+| MLflow | http://localhost:5000 |
+| Airflow | http://localhost:8080 (airflow/airflow) |
+
+---
+
+### Troubleshooting (Mac)
+
+| Problem | Fix |
+|---|---|
+| `geopandas` install fails on M1/M2/M3 | `brew install gdal` first |
+| `Empty reply from server` | Services still starting — wait 2-3 min and retry |
+| MLflow `database does not exist` | Run the `CREATE DATABASE` commands in Step 7 |
+| Airflow crash loop | Check `.env` Fernet key is the full value from Step 6 |
+| FastAPI `Not Found` on /dashboard | `docker-compose up -d --no-deps --build fastapi` |
+| `git push` rejected | `git pull origin main --allow-unrelated-histories` first |
+| Permission denied on `venv` | `chmod +x venv/bin/activate` |
+
+---
+
+### Stopping the stack
+
+```bash
+docker-compose down          # stops containers, keeps data
+docker-compose down -v       # stops containers AND wipes databases
+```
+
+> ⚠️ `down -v` deletes the Postgres databases. Recreate them (Step 7) on next start.
+
+---
+
 ## Design Decisions
 
 | Decision | Rationale |
