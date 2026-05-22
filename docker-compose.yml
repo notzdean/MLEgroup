@@ -119,6 +119,7 @@ services:
     volumes:
       - ./model:/app/model
       - ./data/gold:/app/data/gold
+      - ./data/bronze:/app/data/bronze
     ports:
       - "8000:8000"
     restart: unless-stopped

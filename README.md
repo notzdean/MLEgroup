@@ -234,71 +234,234 @@ cs611-dengue/
 
 ---
 
-## Quickstart
+## Quickstart — Teammate Setup (Windows)
 
-### 1. Prerequisites
-- Python 3.11+
-- Docker Desktop
-- Git
+> Follow these steps exactly. Takes about 20-30 minutes on first run.
 
-### 2. Clone and setup
-```bash
+### Prerequisites
+- Python 3.11+ — [python.org](https://www.python.org/downloads/)
+- Docker Desktop — [docker.com](https://www.docker.com/products/docker-desktop/) — **must be running before Step 5**
+- Git — [git-scm.com](https://git-scm.com/)
+
+---
+
+### Step 1 — Clone the repo
+
+Open CMD and run:
+```cmd
 git clone https://github.com/notzdean/MLEgroup.git
 cd MLEgroup
-cp .env.example .env          # fill in passwords
+```
+
+---
+
+### Step 2 — Place data files
+
+Data files are NOT in the repo (gitignored). Get them from the shared Google Drive and place them in `data\bronze\`:
+
+```
+data\bronze\raw_sgcharts_dengue.csv
+data\bronze\raw_mss_weather_2013_2020.csv
+data\bronze\raw_mss_stations_list_mss.csv
+data\bronze\raw_singstat_pop_17560.csv
+data\bronze\raw_MasterPlan2019SubzoneBoundaryNoSeaGEOJSON.geojson
+```
+
+Create the folders if they don't exist:
+```cmd
+mkdir data\bronze
+mkdir data\silver
+mkdir data\gold
+```
+
+---
+
+### Step 3 — Install Python dependencies
+
+```cmd
 pip install -r requirements.txt
 ```
 
-### 3. Place data files in `data/bronze/`
-```
-raw_sgcharts_dengue.csv
-raw_mss_weather_2013_2020.csv
-raw_mss_stations_list_mss.csv
-raw_singstat_pop_17560.csv
-raw_MasterPlan2019SubzoneBoundaryNoSeaGEOJSON.geojson
+If geopandas fails on Windows, install it separately first:
+```cmd
+pip install geopandas pyarrow
+pip install -r requirements.txt
 ```
 
-### 4. Run the pipeline
-```bash
-# Bronze ingestion (any order)
-python pipeline/ingest_sgcharts.py
-python pipeline/ingest_mss_weather.py
-python pipeline/ingest_population.py
-python pipeline/ingest_geodata.py
+---
 
-# Silver cleaning
-python pipeline/preprocess.py
+### Step 4 — Run the pipeline
 
-# Gold features + label
-python pipeline/feature_engineering.py
+Run in this exact order — each step depends on the previous:
 
-# Train + evaluate
-python model/train.py
-python model/evaluate.py
+```cmd
+:: Bronze ingestion (loads raw files, schema enforcement only)
+python pipeline\ingest_sgcharts.py
+python pipeline\ingest_mss_weather.py
+python pipeline\ingest_population.py
+python pipeline\ingest_geodata.py
 
-# Monitor drift
-python monitoring/monitor.py
+:: Silver cleaning (drops bad rows, fills gaps, derives columns)
+python pipeline\preprocess.py
+
+:: Gold features + label (spatial join, weather lags, vulnerability index)
+python pipeline\feature_engineering.py
+
+:: Train model (XGBoost + LightGBM, Optuna HPT, ~5 minutes)
+python model\train.py
+
+:: Evaluate + promote to Production
+python model\evaluate.py
 ```
 
-### 5. Start Docker stack
-```bash
+Expected output at the end of `evaluate.py`:
+```
+[gate] Promotion gate
+  Recall ≥ 0.7 on test    : ✓
+  OOT drop ≤ 10pp         : ✓
+  AUC-ROC ≥ 0.75 on test  : ✓
+  SHAP values logged       : ✓
+  Overall: ✓ PASS — promote to Production
+```
+
+---
+
+### Step 5 — Create `.env` file
+
+The `.env` file is gitignored (contains passwords). Create it by running this in CMD:
+
+```cmd
+(
+echo POSTGRES_USER=dengue
+echo POSTGRES_PASSWORD=dengue
+echo POSTGRES_DB=dengue
+echo POSTGRES_HOST=postgres
+echo POSTGRES_PORT=5432
+echo DATABASE_URL=postgresql://dengue:dengue@postgres:5432/dengue
+echo REDIS_HOST=redis
+echo REDIS_PORT=6379
+echo REDIS_URL=redis://redis:6379/0
+echo MLFLOW_TRACKING_URI=http://mlflow:5000
+echo MLFLOW_BACKEND_STORE_URI=postgresql://dengue:dengue@postgres:5432/mlflow
+echo MLFLOW_ARTIFACT_ROOT=/mlflow/artifacts
+echo AIRFLOW__CORE__EXECUTOR=LocalExecutor
+echo AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql://dengue:dengue@postgres:5432/airflow
+echo AIRFLOW__CORE__FERNET_KEY=yLNRaItTnErXtgko8KX3w7l2ZceMT-O571vgP2OJAQk=
+echo AIRFLOW__WEBSERVER__SECRET_KEY=3cb72cfa6f6c28fd3fc2784ea934583e0a5aed5ce61d8bb85cfa109d5dc37d4c
+echo AIRFLOW_ADMIN_USER=airflow
+echo AIRFLOW_ADMIN_PASSWORD=airflow
+echo FASTAPI_HOST=0.0.0.0
+echo FASTAPI_PORT=8000
+echo ALERT_THRESHOLD=0.6
+echo MODEL_NAME=dengue_cluster_model
+echo MODEL_STAGE=Production
+) > .env
+```
+
+---
+
+### Step 6 — Start Docker stack
+
+Make sure Docker Desktop is open and running, then:
+
+```cmd
 docker-compose up -d
 ```
 
-| Service | URL | Credentials |
-|---|---|---|
-| MLflow | http://localhost:5000 | — |
-| Airflow | http://localhost:8080 | airflow / airflow |
-| FastAPI | http://localhost:8000/docs | — |
-| Postgres | localhost:5432 | dengue / dengue |
-| Redis | localhost:6379 | — |
+First run downloads images and takes ~5 minutes. You'll see:
+```
+✔ Container dengue_postgres    Healthy
+✔ Container dengue_redis       Healthy
+✔ Container dengue_airflow     Started
+✔ Container dengue_mlflow      Started
+✔ Container dengue_fastapi     Started
+```
 
-### 6. Test the real-time endpoint
+**Important:** On first boot, MLflow and Airflow need their databases created. Run:
+```cmd
+docker exec dengue_postgres psql -U dengue -d dengue -c "CREATE DATABASE mlflow;"
+docker exec dengue_postgres psql -U dengue -d dengue -c "CREATE DATABASE airflow;"
+```
+
+Then restart the services:
+```cmd
+docker-compose restart mlflow airflow
+```
+
+Wait 2-3 minutes for MLflow to finish installing, then restart FastAPI:
+```cmd
+docker-compose restart fastapi
+```
+
+---
+
+### Step 7 — Verify everything is running
+
+```cmd
+curl http://localhost:8000/health
+```
+
+Expected: `{"status":"ok","model":"lightgbm","redis":true,"postgres":true}`
+
+---
+
+### Step 8 — Open the dashboards
+
+| Dashboard | URL | What it shows |
+|---|---|---|
+| NEA Risk Map | http://localhost:8000/dashboard | Singapore choropleth map, subzone risk tiers, click for details |
+| CDA Mobile Emulator | http://localhost:8000/mobile | Real-time alert simulation for CDC Officer |
+| FastAPI docs | http://localhost:8000/docs | All API endpoints |
+| MLflow | http://localhost:5000 | Model runs, metrics, registry |
+| Airflow | http://localhost:8080 | DAG schedule (airflow/airflow) |
+
+---
+
+### Test the real-time alert
+
+Submit a confirmed case and watch the alert fire:
+
+**Windows CMD:**
+```cmd
+curl -X POST http://localhost:8000/cases/confirmed -H "Content-Type: application/json" -d "{\"subzone_name\": \"TAMPINES EAST\", \"case_count\": 5, \"source\": \"hospital\"}"
+```
+
+**Mac/Linux:**
 ```bash
 curl -X POST http://localhost:8000/cases/confirmed \
   -H "Content-Type: application/json" \
-  -d '{"subzone_name": "TAMPINES EAST", "case_count": 3, "source": "hospital"}'
+  -d '{"subzone_name": "TAMPINES EAST", "case_count": 5, "source": "hospital"}'
 ```
+
+Run it 3 times — the alert triggers on the 3rd call when `alert_score > 0.6`.
+
+---
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `geopandas` install fails | `pip install geopandas pyarrow` separately first |
+| `Empty reply from server` on port 5000/8080 | Services still starting — wait 2-3 min and retry |
+| MLflow `database does not exist` | Run the `CREATE DATABASE mlflow` command in Step 6 |
+| Airflow `Fernet key` error | Check `.env` has the full key from Step 5 |
+| FastAPI `Not Found` on /dashboard | Rebuild: `docker-compose up -d --no-deps --build fastapi` |
+| `git push` rejected | Run `git pull origin main --allow-unrelated-histories` first |
+
+---
+
+### Stopping the stack
+
+```cmd
+docker-compose down
+```
+
+This stops containers but **keeps data** (Postgres volumes persist). To also wipe data:
+```cmd
+docker-compose down -v
+```
+
+> ⚠️ `down -v` deletes the Postgres databases. You'll need to recreate them (Step 6) on next start.
 
 ---
 
