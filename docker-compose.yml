@@ -60,13 +60,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: >
-      bash -c "pip install mlflow psycopg2-binary --quiet &&
-               mlflow server
-               --backend-store-uri ${MLFLOW_BACKEND_STORE_URI}
-               --default-artifact-root ${MLFLOW_ARTIFACT_ROOT}
-               --host 0.0.0.0
-               --port 5000"
+    command: bash -c "pip install mlflow psycopg2-binary --quiet && mlflow server --backend-store-uri $${MLFLOW_BACKEND_STORE_URI} --default-artifact-root $${MLFLOW_ARTIFACT_ROOT} --host 0.0.0.0 --port 5000"
+    environment:
+      MLFLOW_BACKEND_STORE_URI: ${MLFLOW_BACKEND_STORE_URI}
+      MLFLOW_ARTIFACT_ROOT: ${MLFLOW_ARTIFACT_ROOT}
+      MLFLOW_TRACKING_INSECURE_TLS: "true"
+      MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING: "false"
+      GUNICORN_CMD_ARGS: "--timeout 120"
     ports:
       - "5000:5000"
     volumes:
