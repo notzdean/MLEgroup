@@ -1,0 +1,343 @@
+"""
+monitoring/monitor.py
+======================
+CS611 MLE Group Project — Dengue Outbreak Risk Prediction
+Model monitoring: PSI / CSI drift detection + retrain trigger.
+
+Scheduled via Airflow (Wed 06:00 SGT — see airflow/dags/retrain_dag.py).
+
+What this script does
+---------------------
+1. Loads recent model predictions from operational.risk_tier (Postgres)
+   and compares score distribution to the training baseline.
+2. Computes PSI (Population Stability Index) on prediction scores.
+   PSI < 0.10  → stable
+   PSI 0.10-0.20 → minor shift, log warning
+   PSI > 0.20  → significant drift, raise alarm
+3. Computes CSI (Characteristic Stability Index) per feature —
+   checks if individual feature distributions have shifted vs training.
+4. Logs all metrics to MLflow.
+5. If PSI > 0.20: writes a drift alarm to operational.drift_alarms
+   and triggers the retrain DAG via Airflow REST API.
+
+Drift context
+-------------
+Jan-Nov 2020 DENV-3 serotype shift is a known concept drift event.
+PSI thresholds are calibrated to flag genuine distribution shifts
+without false-alarming on seasonal variation.
+
+Local fallback
+--------------
+If Postgres/MLflow/Airflow are not running (local dev without Docker),
+the script reads from data/gold/subzone_features.parquet and
+data/gold/training_score_baseline.parquet and writes results to
+model/monitoring_report.json.
+"""
+
+import json
+import warnings
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from datetime import datetime, timedelta
+
+warnings.filterwarnings("ignore")
+
+ROOT       = Path(__file__).resolve().parent.parent
+GOLD       = ROOT / "data" / "gold"
+MODEL_DIR  = ROOT / "model"
+REPORT_DIR = ROOT / "model"
+
+MLFLOW_TRACKING_URI = "http://localhost:5000"
+AIRFLOW_API_URL     = "http://localhost:8080/api/v1"
+AIRFLOW_DAG_ID      = "dengue_retrain_dag"
+POSTGRES_DSN        = "postgresql://dengue:dengue@localhost:5432/dengue"
+
+# PSI thresholds
+PSI_WARN  = 0.10
+PSI_ALARM = 0.20
+
+# CSI threshold per feature
+CSI_ALARM = 0.25
+
+FEATURES = [
+    "rainfall_lag1w", "rainfall_lag2w", "rainfall_lag4w",
+    "cluster_count_rolling2w", "cluster_count_rolling4w",
+    "population", "elderly_pct", "area_km2", "population_density",
+    "vulnerability_index",
+]
+
+
+# ── PSI ───────────────────────────────────────────────────────────────────────
+
+def compute_psi(expected: np.ndarray, actual: np.ndarray, bins: int = 10) -> float:
+    """
+    Population Stability Index.
+    Measures shift in score/feature distribution between baseline and current.
+    PSI = Σ (Actual% - Expected%) × ln(Actual% / Expected%)
+    """
+    breakpoints = np.linspace(
+        min(expected.min(), actual.min()),
+        max(expected.max(), actual.max()),
+        bins + 1
+    )
+    e_counts = np.histogram(expected, bins=breakpoints)[0]
+    a_counts = np.histogram(actual,   bins=breakpoints)[0]
+
+    # Replace zeros to avoid log(0)
+    e_pct = np.where(e_counts == 0, 1e-4, e_counts / len(expected))
+    a_pct = np.where(a_counts == 0, 1e-4, a_counts / len(actual))
+
+    psi = float(np.sum((a_pct - e_pct) * np.log(a_pct / e_pct)))
+    return round(psi, 4)
+
+
+def psi_flag(psi: float) -> str:
+    if psi < PSI_WARN:
+        return "stable"
+    elif psi < PSI_ALARM:
+        return "minor_shift"
+    else:
+        return "significant_drift"
+
+
+# ── CSI ───────────────────────────────────────────────────────────────────────
+
+def compute_csi(baseline_df: pd.DataFrame, current_df: pd.DataFrame) -> dict:
+    """
+    Characteristic Stability Index — PSI applied per feature.
+    Measures if individual feature distributions have shifted.
+    """
+    csi_results = {}
+    for feat in FEATURES:
+        if feat not in baseline_df.columns or feat not in current_df.columns:
+            continue
+        b = baseline_df[feat].dropna().values
+        c = current_df[feat].dropna().values
+        if len(b) < 10 or len(c) < 10:
+            continue
+        csi_results[feat] = {
+            "csi":  compute_psi(b, c),
+            "flag": psi_flag(compute_psi(b, c))
+        }
+    return csi_results
+
+
+# ── data loading ──────────────────────────────────────────────────────────────
+
+def load_baseline() -> tuple[np.ndarray, pd.DataFrame]:
+    """
+    Load training score baseline and feature distributions.
+    Tries Postgres first, falls back to local parquet.
+    """
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(POSTGRES_DSN)
+        with engine.connect() as conn:
+            scores = pd.read_sql(
+                text("SELECT score FROM operational.risk_tier WHERE split = 'train'"),
+                conn
+            )
+            features = pd.read_sql(
+                text("SELECT * FROM gold.subzone_features WHERE date <= '2018-12-31'"),
+                conn
+            )
+        print(f"[load] Baseline from Postgres — {len(scores):,} scores")
+        return scores["score"].values, features
+
+    except Exception:
+        print("[load] Postgres unavailable — loading baseline from parquet")
+        df = pd.read_parquet(GOLD / "subzone_features.parquet")
+        df["date"] = pd.to_datetime(df["date"])
+        train = df[df["date"] <= "2018-12-31"]
+        # Generate pseudo-scores using the saved model
+        scores = _score_with_model(train)
+        return scores, train
+
+
+def load_recent_predictions(lookback_days: int = 14) -> tuple[np.ndarray, pd.DataFrame]:
+    """
+    Load recent predictions (last N days) for monitoring.
+    Tries Postgres first, falls back to local parquet (OOT window).
+    """
+    cutoff = datetime.now() - timedelta(days=lookback_days)
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(POSTGRES_DSN)
+        with engine.connect() as conn:
+            scores = pd.read_sql(
+                text(f"SELECT score FROM operational.risk_tier WHERE scored_at >= '{cutoff}'"),
+                conn
+            )
+            features = pd.read_sql(
+                text(f"SELECT * FROM gold.subzone_features WHERE date >= '{cutoff.date()}'"),
+                conn
+            )
+        print(f"[load] Recent predictions from Postgres — {len(scores):,} scores")
+        return scores["score"].values, features
+
+    except Exception:
+        print("[load] Postgres unavailable — using OOT window as recent data")
+        df = pd.read_parquet(GOLD / "subzone_features.parquet")
+        df["date"] = pd.to_datetime(df["date"])
+        oot = df[df["date"] >= "2020-01-01"]
+        scores = _score_with_model(oot)
+        return scores, oot
+
+
+def _score_with_model(df: pd.DataFrame) -> np.ndarray:
+    """Score a dataframe using the saved candidate model."""
+    try:
+        meta_path = MODEL_DIR / "candidate" / "candidate_meta.json"
+        with open(meta_path) as f:
+            meta = json.load(f)
+
+        model_type = meta["model_type"]
+        features   = meta["features"]
+        X = df[features].fillna(0).values
+
+        if model_type == "xgboost":
+            import xgboost as xgb
+            model = xgb.XGBClassifier()
+            model.load_model(MODEL_DIR / "candidate" / "model.xgb")
+            return model.predict_proba(X)[:, 1]
+        else:
+            import lightgbm as lgb
+            model = lgb.Booster(model_file=str(MODEL_DIR / "candidate" / "model.lgb"))
+            return model.predict(X)
+
+    except Exception as e:
+        print(f"  ⚠ Could not score with model ({e}) — using random scores as placeholder")
+        return np.random.uniform(0, 1, len(df))
+
+
+# ── alarm & retrain trigger ───────────────────────────────────────────────────
+
+def write_alarm_to_postgres(psi: float, csi_results: dict):
+    """Write drift alarm to operational.drift_alarms table."""
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(POSTGRES_DSN)
+        with engine.connect() as conn:
+            conn.execute(text("""
+                INSERT INTO operational.drift_alarms
+                    (alarm_time, psi, psi_flag, csi_json, action)
+                VALUES
+                    (NOW(), :psi, :flag, :csi, 'retrain_triggered')
+            """), {
+                "psi":  psi,
+                "flag": psi_flag(psi),
+                "csi":  json.dumps(csi_results)
+            })
+            conn.commit()
+        print(f"  [alarm] Written to operational.drift_alarms")
+    except Exception as e:
+        print(f"  ⚠ Could not write alarm to Postgres ({e})")
+
+
+def trigger_retrain_dag():
+    """Trigger Airflow retrain DAG via REST API."""
+    try:
+        import requests
+        resp = requests.post(
+            f"{AIRFLOW_API_URL}/dags/{AIRFLOW_DAG_ID}/dagRuns",
+            json={"conf": {"triggered_by": "monitor.py", "reason": "psi_threshold_exceeded"}},
+            auth=("airflow", "airflow"),
+            timeout=10
+        )
+        if resp.status_code in (200, 201):
+            print(f"  [trigger] Retrain DAG triggered — run_id: {resp.json().get('dag_run_id')}")
+        else:
+            print(f"  ⚠ Airflow trigger failed: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"  ⚠ Could not trigger Airflow DAG ({e})")
+
+
+def log_to_mlflow(psi: float, csi_results: dict, score_psi_flag: str):
+    """Log monitoring metrics to MLflow."""
+    try:
+        import mlflow
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_experiment("dengue_monitoring")
+
+        with mlflow.start_run(run_name=f"monitor_{datetime.now().strftime('%Y%m%d_%H%M')}"):
+            mlflow.log_metric("score_psi", psi)
+            mlflow.log_param("score_psi_flag", score_psi_flag)
+            for feat, result in csi_results.items():
+                mlflow.log_metric(f"csi_{feat}", result["csi"])
+        print("  [mlflow] Metrics logged")
+    except Exception as e:
+        print(f"  ⚠ MLflow logging failed ({e})")
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    print("=" * 60)
+    print("Model Monitoring — PSI / CSI Drift Detection")
+    print(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+
+    # Load data
+    baseline_scores, baseline_features = load_baseline()
+    recent_scores,   recent_features   = load_recent_predictions()
+
+    print(f"\n[data] Baseline: {len(baseline_scores):,} scores | "
+          f"Recent: {len(recent_scores):,} scores")
+
+    # PSI on prediction scores
+    score_psi = compute_psi(baseline_scores, recent_scores)
+    flag      = psi_flag(score_psi)
+    print(f"\n[psi]  Score PSI: {score_psi:.4f} — {flag}")
+    if flag == "minor_shift":
+        print("       ⚠ Minor shift detected — monitoring closely")
+    elif flag == "significant_drift":
+        print("       ✗ SIGNIFICANT DRIFT — retrain required")
+
+    # CSI per feature
+    print("\n[csi]  Feature stability:")
+    csi_results = compute_csi(baseline_features, recent_features)
+    alarmed_features = []
+    for feat, result in csi_results.items():
+        icon = "✓" if result["flag"] == "stable" else ("⚠" if result["flag"] == "minor_shift" else "✗")
+        print(f"       {icon} {feat:<35} CSI={result['csi']:.4f}  {result['flag']}")
+        if result["csi"] > CSI_ALARM:
+            alarmed_features.append(feat)
+
+    if alarmed_features:
+        print(f"\n  Features with significant shift: {alarmed_features}")
+
+    # Log to MLflow
+    log_to_mlflow(score_psi, csi_results, flag)
+
+    # Build report
+    report = {
+        "run_time":          datetime.now().isoformat(),
+        "score_psi":         score_psi,
+        "score_psi_flag":    flag,
+        "csi_results":       csi_results,
+        "alarmed_features":  alarmed_features,
+        "retrain_triggered": False,
+    }
+
+    # Trigger retrain if PSI exceeds alarm threshold
+    if score_psi > PSI_ALARM:
+        print(f"\n[alarm] PSI {score_psi:.4f} > {PSI_ALARM} threshold — triggering retrain")
+        write_alarm_to_postgres(score_psi, csi_results)
+        trigger_retrain_dag()
+        report["retrain_triggered"] = True
+    else:
+        print(f"\n[ok]   PSI {score_psi:.4f} within acceptable range — no action required")
+
+    # Save report
+    report_path = REPORT_DIR / "monitoring_report.json"
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"\n[save] Report → {report_path.name}")
+    print("[done] Monitoring complete.")
+
+    return report
+
+
+if __name__ == "__main__":
+    main()

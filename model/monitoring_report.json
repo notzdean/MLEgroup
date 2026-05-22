@@ -1,0 +1,55 @@
+{
+  "run_time": "2026-05-22T13:03:08.250956",
+  "score_psi": 1.7716,
+  "score_psi_flag": "significant_drift",
+  "csi_results": {
+    "rainfall_lag1w": {
+      "csi": 0.376,
+      "flag": "significant_drift"
+    },
+    "rainfall_lag2w": {
+      "csi": 0.5451,
+      "flag": "significant_drift"
+    },
+    "rainfall_lag4w": {
+      "csi": 0.6859,
+      "flag": "significant_drift"
+    },
+    "cluster_count_rolling2w": {
+      "csi": 10.1776,
+      "flag": "significant_drift"
+    },
+    "cluster_count_rolling4w": {
+      "csi": 11.9537,
+      "flag": "significant_drift"
+    },
+    "population": {
+      "csi": 0.0,
+      "flag": "stable"
+    },
+    "elderly_pct": {
+      "csi": 0.0,
+      "flag": "stable"
+    },
+    "area_km2": {
+      "csi": 0.0,
+      "flag": "stable"
+    },
+    "population_density": {
+      "csi": 0.0,
+      "flag": "stable"
+    },
+    "vulnerability_index": {
+      "csi": 0.0,
+      "flag": "stable"
+    }
+  },
+  "alarmed_features": [
+    "rainfall_lag1w",
+    "rainfall_lag2w",
+    "rainfall_lag4w",
+    "cluster_count_rolling2w",
+    "cluster_count_rolling4w"
+  ],
+  "retrain_triggered": true
+}

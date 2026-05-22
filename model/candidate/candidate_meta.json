@@ -1,0 +1,34 @@
+{
+  "model_type": "lightgbm",
+  "val_metrics": {
+    "val_recall": 0.9923,
+    "val_precision": 0.2047,
+    "val_f1": 0.3393,
+    "val_auc_roc": 0.8509
+  },
+  "params": {
+    "n_estimators": 155,
+    "max_depth": 3,
+    "learning_rate": 0.012855397622817089,
+    "subsample": 0.7262971319764988,
+    "colsample_bytree": 0.6420244379455837,
+    "min_child_samples": 29,
+    "scale_pos_weight": 8.692048933484005
+  },
+  "features": [
+    "rainfall_lag1w",
+    "rainfall_lag2w",
+    "rainfall_lag4w",
+    "cluster_count_rolling2w",
+    "cluster_count_rolling4w",
+    "population",
+    "elderly_pct",
+    "area_km2",
+    "population_density",
+    "vulnerability_index"
+  ],
+  "train_end": "2018-12-31",
+  "val_start": "2019-01-01",
+  "val_end": "2019-06-30",
+  "recall_target": 0.7
+}

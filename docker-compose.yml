@@ -1,0 +1,130 @@
+# CS611 MLE Group Project — Local Docker Stack
+# Services: Postgres, Redis, MLflow, Airflow, FastAPI
+#
+# Usage:
+#   docker-compose up -d          # start all services
+#   docker-compose down           # stop all services
+#   docker-compose logs -f        # tail logs
+#
+# Ports:
+#   Postgres  : 5432
+#   Redis     : 6379
+#   MLflow    : 5000  → http://localhost:5000
+#   Airflow   : 8080  → http://localhost:8080
+#   FastAPI   : 8000  → http://localhost:8000/docs
+
+version: "3.9"
+
+x-common-env: &common-env
+  env_file: .env
+
+services:
+
+  # ── Postgres ────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: dengue_postgres
+    <<: *common-env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: dengue_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── MLflow ───────────────────────────────────────────────────────────────────
+  mlflow:
+    image: python:3.11-slim
+    container_name: dengue_mlflow
+    <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -c "pip install mlflow psycopg2-binary --quiet &&
+               mlflow server
+               --backend-store-uri ${MLFLOW_BACKEND_STORE_URI}
+               --default-artifact-root ${MLFLOW_ARTIFACT_ROOT}
+               --host 0.0.0.0
+               --port 5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    restart: unless-stopped
+
+  # ── Airflow ──────────────────────────────────────────────────────────────────
+  airflow:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: dengue_airflow
+    <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      _AIRFLOW_DB_UPGRADE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+    volumes:
+      - ./inference/airflow:/opt/airflow/dags
+      - ./data:/opt/airflow/data
+      - ./model:/opt/airflow/model
+      - ./pipeline:/opt/airflow/pipeline
+      - airflow_logs:/opt/airflow/logs
+    ports:
+      - "8080:8080"
+    command: standalone
+    restart: unless-stopped
+
+  # ── FastAPI (real-time inference) ─────────────────────────────────────────────
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dengue_fastapi
+    <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    volumes:
+      - ./model:/app/model
+      - ./data/gold:/app/data/gold
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  mlflow_artifacts:
+  airflow_logs:

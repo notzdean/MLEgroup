@@ -1,0 +1,69 @@
+{
+  "model_type": "lightgbm",
+  "features": [
+    "rainfall_lag1w",
+    "rainfall_lag2w",
+    "rainfall_lag4w",
+    "cluster_count_rolling2w",
+    "cluster_count_rolling4w",
+    "population",
+    "elderly_pct",
+    "area_km2",
+    "population_density",
+    "vulnerability_index"
+  ],
+  "test_metrics": {
+    "split": "Test",
+    "n_rows": 6850,
+    "n_positive": 2003,
+    "recall": 0.996,
+    "precision": 0.3205,
+    "f1": 0.4849,
+    "auc_roc": 0.8271,
+    "tp": 1995,
+    "fp": 4230,
+    "tn": 617,
+    "fn": 8
+  },
+  "oot_metrics": {
+    "split": "OOT",
+    "n_rows": 7398,
+    "n_positive": 1901,
+    "recall": 0.9826,
+    "precision": 0.2756,
+    "f1": 0.4305,
+    "auc_roc": 0.7871,
+    "tp": 1868,
+    "fp": 4909,
+    "tn": 588,
+    "fn": 33
+  },
+  "psi": 0.0179,
+  "psi_flag": "stable",
+  "shap_importance": {
+    "population": 0.5313,
+    "cluster_count_rolling2w": 0.3483,
+    "cluster_count_rolling4w": 0.2316,
+    "population_density": 0.1684,
+    "elderly_pct": 0.1114,
+    "area_km2": 0.0873,
+    "vulnerability_index": 0.0765,
+    "rainfall_lag1w": 0.0293,
+    "rainfall_lag2w": 0.0247,
+    "rainfall_lag4w": 0.0056
+  },
+  "gate_results": {
+    "recall_test_pass": true,
+    "oot_drop_pass": true,
+    "auc_test_pass": true,
+    "shap_logged": true
+  },
+  "promoted": true,
+  "val_metrics": {
+    "val_recall": 0.9923,
+    "val_precision": 0.2047,
+    "val_f1": 0.3393,
+    "val_auc_roc": 0.8509
+  },
+  "note_oot": "OOT period (Jan-Nov 2020) covers the DENV-3 serotype shift outbreak (35,000+ cases). Performance degradation is expected and documented as a concept drift case study, not a model failure."
+}
