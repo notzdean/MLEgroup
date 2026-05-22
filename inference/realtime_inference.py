@@ -493,9 +493,9 @@ def serve_scores():
 def batch_dashboard():
     """
     NEA Operations batch inference dashboard.
-    Leaflet.js choropleth map of Singapore subzones coloured by risk tier.
-    Click any subzone for score details.
-    Auto-refreshes scores every 30 seconds without reloading the page.
+    Tab 1: Leaflet choropleth map of Singapore subzones.
+    Tab 2: Charts — score distribution, top 20, tier donut, scatter, case counts.
+    Auto-refreshes every 30 seconds.
     """
     html = """<!DOCTYPE html>
 <html lang="en">
@@ -506,6 +506,7 @@ def batch_dashboard():
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {
     --bg: #0a0f1e; --surface: #111827; --border: #1f2937;
@@ -525,76 +526,94 @@ def batch_dashboard():
   @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(1.4)} }
   .title { font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600; letter-spacing:.04em; }
   .subtitle { font-size:11px; color:var(--muted); margin-top:1px; }
-  .header-right { display:flex; align-items:center; gap:20px; }
+  .header-right { display:flex; align-items:center; gap:16px; }
   .stat-pill {
     background:var(--bg); border:1px solid var(--border); border-radius:6px;
-    padding:6px 14px; display:flex; align-items:center; gap:8px;
+    padding:5px 12px; display:flex; align-items:center; gap:8px;
   }
   .stat-pill .dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
   .stat-pill .label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
-  .stat-pill .val { font-family:'IBM Plex Mono',monospace; font-size:16px; font-weight:600; }
+  .stat-pill .val { font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600; }
   .timestamp { font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--muted); }
 
-  .main { display:flex; flex:1; overflow:hidden; }
+  /* Tabs */
+  .tab-bar {
+    background:var(--surface); border-bottom:1px solid var(--border);
+    display:flex; gap:0; flex-shrink:0;
+  }
+  .tab-btn {
+    padding:10px 24px; font-size:13px; font-family:'IBM Plex Mono',monospace;
+    color:var(--muted); background:none; border:none; cursor:pointer;
+    border-bottom:2px solid transparent; transition:all .2s; letter-spacing:.04em;
+  }
+  .tab-btn:hover { color:var(--text); }
+  .tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
 
+  .tab-content { display:none; flex:1; overflow:hidden; }
+  .tab-content.active { display:flex; }
+
+  /* Map tab */
   #map { flex:1; }
-
-  /* Override Leaflet tiles for dark mode */
   .leaflet-tile { filter: brightness(0.6) invert(1) contrast(3) hue-rotate(200deg) saturate(0.3) brightness(0.7); }
-
   .sidebar {
-    width:280px; background:var(--surface); border-left:1px solid var(--border);
-    overflow-y:auto; flex-shrink:0;
-    display:flex; flex-direction:column;
+    width:270px; background:var(--surface); border-left:1px solid var(--border);
+    overflow-y:auto; flex-shrink:0; display:flex; flex-direction:column;
   }
   .sidebar-header {
-    padding:14px 16px; border-bottom:1px solid var(--border);
+    padding:12px 16px; border-bottom:1px solid var(--border);
     font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em;
-    display:flex; justify-content:space-between;
+    display:flex; justify-content:space-between; flex-shrink:0;
   }
   .subzone-item {
-    padding:12px 16px; border-bottom:1px solid var(--border);
+    padding:10px 16px; border-bottom:1px solid var(--border);
     cursor:pointer; transition:background .15s;
     display:flex; align-items:center; justify-content:space-between;
   }
   .subzone-item:hover { background:rgba(255,255,255,.04); }
-  .subzone-name { font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text); }
+  .subzone-name { font-family:'IBM Plex Mono',monospace; font-size:11px; }
   .tier-badge {
-    padding:2px 8px; border-radius:3px; font-size:10px; font-weight:600;
+    padding:2px 7px; border-radius:3px; font-size:10px; font-weight:600;
     letter-spacing:.04em; font-family:'IBM Plex Mono',monospace; color:#fff;
   }
-  .score-val { font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted); min-width:36px; text-align:right; }
-
+  .score-val { font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--muted); min-width:38px; text-align:right; }
   .legend {
     position:absolute; bottom:30px; left:10px; z-index:1000;
-    background:rgba(17,24,39,.9); backdrop-filter:blur(8px);
+    background:rgba(17,24,39,.92); backdrop-filter:blur(8px);
     border:1px solid var(--border); border-radius:8px; padding:12px 16px;
   }
   .legend-title { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
   .legend-row { display:flex; align-items:center; gap:8px; margin-bottom:5px; font-size:12px; }
-  .legend-swatch { width:14px; height:14px; border-radius:3px; flex-shrink:0; }
-
-  /* Popup */
+  .legend-swatch { width:13px; height:13px; border-radius:3px; flex-shrink:0; }
   .leaflet-popup-content-wrapper {
-    background:var(--surface); border:1px solid var(--border);
-    border-radius:10px; box-shadow:0 8px 32px rgba(0,0,0,.5);
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    box-shadow:0 8px 32px rgba(0,0,0,.5);
   }
   .leaflet-popup-content { margin:14px; }
   .leaflet-popup-tip { background:var(--surface); }
-  .popup-name { font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600; color:var(--text); margin-bottom:10px; }
+  .popup-name { font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600; color:var(--text); margin-bottom:8px; }
   .popup-row { display:flex; justify-content:space-between; font-size:12px; padding:4px 0; border-bottom:1px solid var(--border); }
   .popup-row:last-child { border:none; }
   .popup-key { color:var(--muted); }
-  .popup-val { font-family:'IBM Plex Mono',monospace; color:var(--text); font-weight:600; }
-  .popup-tier { display:inline-block; padding:3px 10px; border-radius:4px; font-size:11px; font-weight:600; color:#fff; margin-bottom:8px; }
-
+  .popup-val { font-family:'IBM Plex Mono',monospace; font-weight:600; }
+  .popup-tier { display:inline-block; padding:2px 8px; border-radius:3px; font-size:11px; font-weight:600; color:#fff; margin-bottom:6px; }
   .loading-overlay {
     position:absolute; inset:0; background:rgba(10,15,30,.8); z-index:2000;
     display:flex; align-items:center; justify-content:center; flex-direction:column; gap:12px;
   }
-  .spinner { width:32px; height:32px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+  .spinner { width:28px; height:28px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
   @keyframes spin { to{transform:rotate(360deg)} }
   .loading-text { font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted); }
+
+  /* Charts tab */
+  .charts-tab { flex:1; overflow-y:auto; padding:24px; display:grid; grid-template-columns:1fr 1fr; grid-template-rows:auto auto auto; gap:20px; }
+  .chart-card {
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:20px; display:flex; flex-direction:column; gap:12px;
+  }
+  .chart-card.wide { grid-column:1/-1; }
+  .chart-title { font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  .chart-wrap { position:relative; height:220px; }
+  .chart-wrap.tall { height:280px; }
 </style>
 </head>
 <body>
@@ -627,14 +646,19 @@ def batch_dashboard():
   </div>
 </div>
 
-<div class="main">
-  <div id="map">
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('map')">🗺 Risk Map</button>
+  <button class="tab-btn" onclick="switchTab('charts')">📊 Analytics</button>
+</div>
+
+<!-- MAP TAB -->
+<div class="tab-content active" id="tab-map">
+  <div id="map" style="position:relative">
     <div class="loading-overlay" id="loadingOverlay">
       <div class="spinner"></div>
       <div class="loading-text">Loading Singapore subzone data...</div>
     </div>
   </div>
-
   <div class="sidebar">
     <div class="sidebar-header">
       <span>Subzone Rankings</span>
@@ -642,150 +666,331 @@ def batch_dashboard():
     </div>
     <div id="sidebarList"></div>
   </div>
+  <div class="legend">
+    <div class="legend-title">Risk Tier</div>
+    <div class="legend-row"><div class="legend-swatch" style="background:#ef4444"></div><span>High (≥0.60) — Deploy fogging</span></div>
+    <div class="legend-row"><div class="legend-swatch" style="background:#f59e0b"></div><span>Medium (0.30–0.59) — Monitor</span></div>
+    <div class="legend-row"><div class="legend-swatch" style="background:#10b981"></div><span>Low (&lt;0.30) — Surveillance</span></div>
+    <div class="legend-row"><div class="legend-swatch" style="background:#374151"></div><span>No data</span></div>
+  </div>
 </div>
 
-<div class="legend">
-  <div class="legend-title">Risk Tier</div>
-  <div class="legend-row"><div class="legend-swatch" style="background:#ef4444"></div><span>High (score ≥ 0.60) — Deploy fogging</span></div>
-  <div class="legend-row"><div class="legend-swatch" style="background:#f59e0b"></div><span>Medium (0.30–0.59) — Monitor</span></div>
-  <div class="legend-row"><div class="legend-swatch" style="background:#10b981"></div><span>Low (&lt;0.30) — Surveillance</span></div>
-  <div class="legend-row"><div class="legend-swatch" style="background:#374151"></div><span>No data</span></div>
+<!-- CHARTS TAB -->
+<div class="tab-content" id="tab-charts">
+  <div class="charts-tab">
+
+    <div class="chart-card">
+      <div class="chart-title">Risk Tier Breakdown</div>
+      <div class="chart-wrap"><canvas id="chartDonut"></canvas></div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-title">Score Distribution</div>
+      <div class="chart-wrap"><canvas id="chartHist"></canvas></div>
+    </div>
+
+    <div class="chart-card wide">
+      <div class="chart-title">Top 20 Highest Risk Subzones</div>
+      <div class="chart-wrap tall"><canvas id="chartTop20"></canvas></div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-title">Vulnerability Index vs Model Score</div>
+      <div class="chart-wrap"><canvas id="chartScatter"></canvas></div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-title">Active Case Count by Subzone (Top 20)</div>
+      <div class="chart-wrap"><canvas id="chartCases"></canvas></div>
+    </div>
+
+  </div>
 </div>
 
 <script>
   const TIER_COLORS = { High:'#ef4444', Medium:'#f59e0b', Low:'#10b981' };
+  const CHART_DEFAULTS = {
+    color: '#e5e7eb',
+    font: { family:"'IBM Plex Mono', monospace", size:11 },
+    grid: { color:'#1f2937' },
+  };
 
-  // Init Leaflet
-  const map = L.map('map', { center:[1.3521, 103.8198], zoom:12, zoomControl:true });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution:'© OpenStreetMap', maxZoom:18
-  }).addTo(map);
-
-  let geoLayer = null;
   let scoresData = {};
+  let geoLayer = null;
+  let mapInitialized = false;
+  let chartsInitialized = false;
+  const charts = {};
 
-  function getColor(subzoneName) {
-    const s = scoresData[subzoneName];
-    if (!s) return '#374151';
-    return TIER_COLORS[s.tier] || '#374151';
+  // ── Tab switching ──────────────────────────────────────────────────────────
+  function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector(`[onclick="switchTab('${tab}')"]`).classList.add('active');
+    document.getElementById(`tab-${tab}`).classList.add('active');
+
+    if (tab === 'map' && !mapInitialized) initMap();
+    if (tab === 'charts') {
+      if (!chartsInitialized) { buildCharts(); chartsInitialized = true; }
+      else updateCharts();
+    }
+  }
+
+  // ── Scores ─────────────────────────────────────────────────────────────────
+  async function loadScores() {
+    try {
+      const resp = await fetch('/scores');
+      scoresData = await resp.json();
+
+      const counts = {High:0, Medium:0, Low:0};
+      Object.values(scoresData).forEach(s => { if(counts[s.tier]!==undefined) counts[s.tier]++; });
+      document.getElementById('statHigh').textContent = counts.High;
+      document.getElementById('statMed').textContent  = counts.Medium;
+      document.getElementById('statLow').textContent  = counts.Low;
+      document.getElementById('sidebarCount').textContent = Object.keys(scoresData).length + ' subzones';
+
+      const now = new Date();
+      document.getElementById('lastUpdate').textContent =
+        'Updated ' + String(now.getHours()).padStart(2,'0') + ':' +
+        String(now.getMinutes()).padStart(2,'0') + ':' +
+        String(now.getSeconds()).padStart(2,'0');
+
+      if (geoLayer) geoLayer.setStyle(styleFeature);
+      updateSidebar();
+      if (chartsInitialized) updateCharts();
+    } catch(e) { console.error('Score load failed:', e); }
+  }
+
+  // ── Map ────────────────────────────────────────────────────────────────────
+  let map;
+  async function initMap() {
+    mapInitialized = true;
+    map = L.map('map', { center:[1.3521,103.8198], zoom:12 });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution:'© OpenStreetMap', maxZoom:18
+    }).addTo(map);
+
+    try {
+      const resp = await fetch('/geojson');
+      const gj   = await resp.json();
+      geoLayer = L.geoJSON(gj, { style:styleFeature, onEachFeature }).addTo(map);
+      map.fitBounds(geoLayer.getBounds(), {padding:[20,20]});
+    } catch(e) { console.error('GeoJSON load failed:', e); }
+
+    document.getElementById('loadingOverlay').style.display = 'none';
+  }
+
+  function getColor(name) {
+    const s = scoresData[name];
+    return s ? (TIER_COLORS[s.tier] || '#374151') : '#374151';
   }
 
   function styleFeature(feature) {
     const name = feature.properties.SUBZONE_N || feature.properties.subzone_name || '';
-    return {
-      fillColor: getColor(name),
-      fillOpacity: 0.65,
-      color: '#1f2937',
-      weight: 0.8,
-    };
+    return { fillColor:getColor(name), fillOpacity:0.65, color:'#1f2937', weight:0.8 };
   }
 
   function onEachFeature(feature, layer) {
     const name = feature.properties.SUBZONE_N || feature.properties.subzone_name || 'Unknown';
     layer.on({
-      mouseover(e) {
-        e.target.setStyle({ fillOpacity:0.85, weight:2, color:'#fff' });
-      },
-      mouseout(e) {
-        geoLayer.resetStyle(e.target);
-      },
+      mouseover(e) { e.target.setStyle({fillOpacity:.85, weight:2, color:'#fff'}); },
+      mouseout(e)  { geoLayer.resetStyle(e.target); },
       click(e) {
         const s = scoresData[name];
         const tier = s ? s.tier : 'No data';
-        const score = s ? s.score : '—';
-        const vuln  = s ? s.vulnerability_index : '—';
-        const cases = s ? s.case_count : '—';
         const color = TIER_COLORS[tier] || '#374151';
-
-        const popup = `
+        layer.bindPopup(`
           <div class="popup-name">${name}</div>
           <div class="popup-tier" style="background:${color}">${tier}</div>
-          <div class="popup-row"><span class="popup-key">Model Score</span><span class="popup-val">${score}</span></div>
-          <div class="popup-row"><span class="popup-key">Vulnerability Index</span><span class="popup-val">${vuln}</span></div>
-          <div class="popup-row"><span class="popup-key">Cases This Week</span><span class="popup-val">${cases}</span></div>
-          <div class="popup-row"><span class="popup-key">P(cluster next 14d)</span><span class="popup-val">${score}</span></div>
-        `;
-        layer.bindPopup(popup, {maxWidth:240}).openPopup();
+          <div class="popup-row"><span class="popup-key">Model Score</span><span class="popup-val">${s?s.score:'—'}</span></div>
+          <div class="popup-row"><span class="popup-key">Vulnerability Index</span><span class="popup-val">${s?s.vulnerability_index:'—'}</span></div>
+          <div class="popup-row"><span class="popup-key">Cases This Week</span><span class="popup-val">${s?s.case_count:'—'}</span></div>
+          <div class="popup-row"><span class="popup-key">P(cluster 14d)</span><span class="popup-val">${s?s.score:'—'}</span></div>
+        `, {maxWidth:240}).openPopup();
       }
     });
   }
 
   function updateSidebar() {
-    const entries = Object.entries(scoresData)
-      .sort((a,b) => b[1].score - a[1].score)
-      .slice(0, 80);
-
-    document.getElementById('sidebarCount').textContent = entries.length + ' subzones';
-
-    const html = entries.map(([name, s]) => {
-      const color = TIER_COLORS[s.tier] || '#374151';
+    const entries = Object.entries(scoresData).sort((a,b)=>b[1].score-a[1].score).slice(0,80);
+    document.getElementById('sidebarList').innerHTML = entries.map(([name,s]) => {
+      const color = TIER_COLORS[s.tier]||'#374151';
       return `<div class="subzone-item" onclick="flyTo('${name}')">
         <div class="subzone-name">${name}</div>
-        <div style="display:flex;align-items:center;gap:8px">
+        <div style="display:flex;align-items:center;gap:6px">
           <span class="tier-badge" style="background:${color}">${s.tier}</span>
           <span class="score-val">${s.score}</span>
         </div>
       </div>`;
     }).join('');
-
-    document.getElementById('sidebarList').innerHTML = html;
-
-    const counts = {High:0, Medium:0, Low:0};
-    Object.values(scoresData).forEach(s => { if(counts[s.tier]!==undefined) counts[s.tier]++; });
-    document.getElementById('statHigh').textContent = counts.High;
-    document.getElementById('statMed').textContent  = counts.Medium;
-    document.getElementById('statLow').textContent  = counts.Low;
-
-    const now = new Date();
-    document.getElementById('lastUpdate').textContent =
-      'Updated ' + String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0') + ':' + String(now.getSeconds()).padStart(2,'0');
   }
 
   function flyTo(name) {
-    if (!geoLayer) return;
+    if (!geoLayer) { switchTab('map'); setTimeout(()=>flyTo(name),500); return; }
     geoLayer.eachLayer(layer => {
       const n = layer.feature.properties.SUBZONE_N || layer.feature.properties.subzone_name || '';
-      if (n === name) {
-        map.flyToBounds(layer.getBounds(), {duration:0.8, padding:[40,40]});
-        layer.fire('click');
+      if (n === name) { map.flyToBounds(layer.getBounds(),{duration:.8,padding:[40,40]}); layer.fire('click'); }
+    });
+  }
+
+  // ── Charts ─────────────────────────────────────────────────────────────────
+  function buildCharts() {
+    const entries  = Object.entries(scoresData);
+    const scores   = entries.map(([,s])=>s.score);
+    const highList = entries.filter(([,s])=>s.tier==='High').sort((a,b)=>b[1].score-a[1].score).slice(0,20);
+    const caseList = entries.filter(([,s])=>s.case_count>1).sort((a,b)=>b[1].case_count-a[1].case_count).slice(0,20);
+
+    const counts = {High:0,Medium:0,Low:0};
+    entries.forEach(([,s])=>{ if(counts[s.tier]!==undefined) counts[s.tier]++; });
+
+    // Chart defaults helper
+    const gridColor = '#1f2937';
+    const textColor = '#9ca3af';
+    const font = {family:"'IBM Plex Mono', monospace", size:10};
+
+    // 1. Donut
+    charts.donut = new Chart(document.getElementById('chartDonut'), {
+      type:'doughnut',
+      data:{
+        labels:['High','Medium','Low'],
+        datasets:[{
+          data:[counts.High,counts.Medium,counts.Low],
+          backgroundColor:['#ef4444','#f59e0b','#10b981'],
+          borderColor:'#111827', borderWidth:3,
+        }]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{
+          legend:{position:'bottom', labels:{color:textColor,font,padding:16,boxWidth:12}},
+          tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${ctx.raw} subzones`}}
+        }
+      }
+    });
+
+    // 2. Histogram
+    const bins = Array.from({length:10},(_,i)=>i*0.1);
+    const binCounts = bins.map(b=>scores.filter(s=>s>=b&&s<b+0.1).length);
+    const binColors = bins.map(b=>b>=0.6?'#ef4444':b>=0.3?'#f59e0b':'#10b981');
+
+    charts.hist = new Chart(document.getElementById('chartHist'), {
+      type:'bar',
+      data:{
+        labels:bins.map(b=>`${b.toFixed(1)}-${(b+0.1).toFixed(1)}`),
+        datasets:[{data:binCounts,backgroundColor:binColors,borderRadius:3,borderSkipped:false}]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{display:false}},
+        scales:{
+          x:{ticks:{color:textColor,font},grid:{color:gridColor}},
+          y:{ticks:{color:textColor,font},grid:{color:gridColor},title:{display:true,text:'Subzones',color:textColor,font}}
+        }
+      }
+    });
+
+    // 3. Top 20 horizontal bar
+    charts.top20 = new Chart(document.getElementById('chartTop20'), {
+      type:'bar',
+      data:{
+        labels:highList.map(([n])=>n),
+        datasets:[{
+          data:highList.map(([,s])=>s.score),
+          backgroundColor:highList.map(([,s])=>TIER_COLORS[s.tier]||'#374151'),
+          borderRadius:3, borderSkipped:false,
+        }]
+      },
+      options:{
+        indexAxis:'y', responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{display:false}},
+        scales:{
+          x:{min:0,max:1,ticks:{color:textColor,font},grid:{color:gridColor}},
+          y:{ticks:{color:textColor,font:{family:"'IBM Plex Mono',monospace",size:10}},grid:{color:gridColor}}
+        }
+      }
+    });
+
+    // 4. Scatter: vulnerability vs score
+    const scatterData = entries.map(([n,s])=>({x:s.vulnerability_index,y:s.score,label:n,tier:s.tier}));
+    charts.scatter = new Chart(document.getElementById('chartScatter'), {
+      type:'scatter',
+      data:{
+        datasets:[
+          {label:'High', data:scatterData.filter(d=>d.tier==='High'), backgroundColor:'rgba(239,68,68,.6)', pointRadius:4},
+          {label:'Medium',data:scatterData.filter(d=>d.tier==='Medium'),backgroundColor:'rgba(245,158,11,.6)',pointRadius:4},
+          {label:'Low',  data:scatterData.filter(d=>d.tier==='Low'),  backgroundColor:'rgba(16,185,129,.6)', pointRadius:4},
+        ]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{labels:{color:textColor,font,boxWidth:10}}},
+        scales:{
+          x:{title:{display:true,text:'Vulnerability Index',color:textColor,font},ticks:{color:textColor,font},grid:{color:gridColor}},
+          y:{title:{display:true,text:'Model Score',color:textColor,font},ticks:{color:textColor,font},grid:{color:gridColor},min:0,max:1}
+        }
+      }
+    });
+
+    // 5. Case counts bar
+    charts.cases = new Chart(document.getElementById('chartCases'), {
+      type:'bar',
+      data:{
+        labels:caseList.length?caseList.map(([n])=>n):['No active cases'],
+        datasets:[{
+          data:caseList.length?caseList.map(([,s])=>s.case_count):[0],
+          backgroundColor:'#06b6d4', borderRadius:3, borderSkipped:false,
+        }]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{display:false}},
+        scales:{
+          x:{ticks:{color:textColor,font:{family:"'IBM Plex Mono',monospace",size:9}},grid:{color:gridColor}},
+          y:{ticks:{color:textColor,font},grid:{color:gridColor},title:{display:true,text:'Cases',color:textColor,font}}
+        }
       }
     });
   }
 
-  async function loadScores() {
-    try {
-      const resp = await fetch('/scores');
-      scoresData = await resp.json();
-      if (geoLayer) geoLayer.setStyle(styleFeature);
-      updateSidebar();
-    } catch(e) {
-      console.error('Failed to load scores:', e);
-    }
+  function updateCharts() {
+    if (!charts.donut) return;
+    const entries = Object.entries(scoresData);
+    const scores  = entries.map(([,s])=>s.score);
+    const counts  = {High:0,Medium:0,Low:0};
+    entries.forEach(([,s])=>{ if(counts[s.tier]!==undefined) counts[s.tier]++; });
+
+    // Donut
+    charts.donut.data.datasets[0].data = [counts.High,counts.Medium,counts.Low];
+    charts.donut.update();
+
+    // Hist
+    const bins = Array.from({length:10},(_,i)=>i*0.1);
+    charts.hist.data.datasets[0].data = bins.map(b=>scores.filter(s=>s>=b&&s<b+0.1).length);
+    charts.hist.update();
+
+    // Top 20
+    const highList = entries.filter(([,s])=>s.tier==='High').sort((a,b)=>b[1].score-a[1].score).slice(0,20);
+    charts.top20.data.labels = highList.map(([n])=>n);
+    charts.top20.data.datasets[0].data = highList.map(([,s])=>s.score);
+    charts.top20.update();
+
+    // Scatter
+    const scatterData = entries.map(([n,s])=>({x:s.vulnerability_index,y:s.score,tier:s.tier}));
+    charts.scatter.data.datasets[0].data = scatterData.filter(d=>d.tier==='High');
+    charts.scatter.data.datasets[1].data = scatterData.filter(d=>d.tier==='Medium');
+    charts.scatter.data.datasets[2].data = scatterData.filter(d=>d.tier==='Low');
+    charts.scatter.update();
+
+    // Cases
+    const caseList = entries.filter(([,s])=>s.case_count>1).sort((a,b)=>b[1].case_count-a[1].case_count).slice(0,20);
+    charts.cases.data.labels = caseList.length?caseList.map(([n])=>n):['No active cases'];
+    charts.cases.data.datasets[0].data = caseList.length?caseList.map(([,s])=>s.case_count):[0];
+    charts.cases.update();
   }
 
+  // ── Init ───────────────────────────────────────────────────────────────────
   async function init() {
-    // Load GeoJSON
-    try {
-      const resp = await fetch('/geojson');
-      const gj   = await resp.json();
-
-      geoLayer = L.geoJSON(gj, {
-        style: styleFeature,
-        onEachFeature: onEachFeature,
-      }).addTo(map);
-
-      map.fitBounds(geoLayer.getBounds(), {padding:[20,20]});
-    } catch(e) {
-      console.error('Failed to load GeoJSON:', e);
-    }
-
-    // Load scores
     await loadScores();
-
-    // Hide loading overlay
-    document.getElementById('loadingOverlay').style.display = 'none';
-
-    // Auto-refresh scores every 30s
+    initMap();
     setInterval(loadScores, 30000);
   }
 
