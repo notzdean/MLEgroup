@@ -55,3 +55,7 @@ mlflow.db
 .DS_Store
 Thumbs.db_archive/ 
 BRONZE/ 
+*.pdf 
+*.pptx 
+*.docx 
+CS611_dengue_handoff_v5.md 
