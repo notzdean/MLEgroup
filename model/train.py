@@ -293,8 +293,8 @@ def main():
 
         print(f"  Val metrics: {val_metrics}")
 
-        recall_flag = "✓" if val_metrics["val_recall"] >= RECALL_TARGET else "✗"
-        print(f"  Recall ≥ {RECALL_TARGET}: {recall_flag} ({val_metrics['val_recall']:.4f})")
+        recall_flag = "PASS" if val_metrics["val_recall"] >= RECALL_TARGET else "FAIL"
+        print(f"  Recall >= {RECALL_TARGET}: {recall_flag} ({val_metrics['val_recall']:.4f})")
 
         # Log to MLflow
         log_to_mlflow(model, model_type, best_params, val_metrics, X_train)

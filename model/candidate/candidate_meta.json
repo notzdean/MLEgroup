@@ -1,19 +1,19 @@
 {
-  "model_type": "lightgbm",
+  "model_type": "xgboost",
   "val_metrics": {
-    "val_recall": 0.9923,
-    "val_precision": 0.2047,
-    "val_f1": 0.3393,
-    "val_auc_roc": 0.8509
+    "val_recall": 0.9936,
+    "val_precision": 0.1998,
+    "val_f1": 0.3327,
+    "val_auc_roc": 0.8512
   },
   "params": {
-    "n_estimators": 155,
-    "max_depth": 3,
-    "learning_rate": 0.012855397622817089,
-    "subsample": 0.7262971319764988,
-    "colsample_bytree": 0.6420244379455837,
-    "min_child_samples": 29,
-    "scale_pos_weight": 8.692048933484005
+    "n_estimators": 161,
+    "max_depth": 4,
+    "learning_rate": 0.01026108807642449,
+    "subsample": 0.7390777256625557,
+    "colsample_bytree": 0.7542745675005516,
+    "min_child_weight": 3,
+    "scale_pos_weight": 8.945882548571618
   },
   "features": [
     "rainfall_lag1w",
