@@ -592,8 +592,9 @@ def submit_confirmed_case(case: ConfirmedCase, background_tasks: BackgroundTasks
             logger.warning(f"Could not write confirmed case: {e}")
 
     # Update Redis directly (belt + suspenders alongside LISTEN/NOTIFY)
+    # Use incrby to add actual case_count, not just 1
     if app_state["redis_client"]:
-        app_state["redis_client"].incr(f"current_week_case_count:{case.subzone_name}")
+        app_state["redis_client"].incrby(f"current_week_case_count:{case.subzone_name}", case.case_count)
 
     # Score
     model_score, online = score_subzone(case.subzone_name)
