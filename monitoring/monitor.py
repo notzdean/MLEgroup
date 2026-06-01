@@ -344,6 +344,146 @@ def _score_with_model(df: pd.DataFrame) -> np.ndarray:
         return np.random.uniform(0, 1, len(df))
 
 
+# ── Feature attribution drift ─────────────────────────────────────────────────
+
+# Thresholds for SHAP drift
+SHAP_RANK_SHIFT_ALARM  = 3    # flag if a feature moves more than 3 positions in ranking
+SHAP_MAG_CHANGE_ALARM  = 0.50 # flag if mean |SHAP| changes by more than 50% relative
+
+
+def check_feature_attribution_drift(recent_features: pd.DataFrame) -> dict:
+    """
+    Compare current SHAP feature importance against the baseline from training.
+
+    Baseline: shap_importance from model/evaluation_report.json
+    Current:  SHAP computed on a sample of recent_features
+
+    Checks:
+    - Ranking shift: did any feature move > 3 positions in importance rank?
+    - Magnitude change: did mean |SHAP| change by > 50% relative to baseline?
+
+    Large ranking shifts or magnitude changes indicate the model is relying
+    on different features in production vs training — a sign of concept drift
+    even if PSI alone doesn't catch it.
+    """
+    print("\n[shap drift] Checking feature attribution drift")
+
+    # Load baseline SHAP from evaluation report
+    eval_report_path = MODEL_DIR / "evaluation_report.json"
+    try:
+        with open(eval_report_path) as f:
+            eval_report = json.load(f)
+        baseline_shap = eval_report.get("shap_importance", {})
+        if not baseline_shap:
+            print("  [warn] No baseline SHAP in evaluation_report.json - skipping")
+            return {"skipped": True, "reason": "no baseline SHAP found"}
+    except Exception as e:
+        print(f"  [warn] Could not load evaluation_report.json ({e})")
+        return {"skipped": True, "reason": str(e)}
+
+    # Compute current SHAP on a sample of recent data
+    try:
+        import shap
+        meta_path = MODEL_DIR / "candidate" / "candidate_meta.json"
+        with open(meta_path) as f:
+            meta = json.load(f)
+
+        model_type = meta["model_type"]
+        features   = meta["features"]
+        X = recent_features[features].fillna(0).values
+
+        # Sample max 300 rows for speed
+        idx = np.random.choice(len(X), min(300, len(X)), replace=False)
+        X_sample = X[idx]
+
+        if model_type == "xgboost":
+            import xgboost as xgb
+            model = xgb.XGBClassifier()
+            model.load_model(MODEL_DIR / "candidate" / "model.xgb")
+            explainer = shap.TreeExplainer(model)
+        else:
+            import lightgbm as lgb
+            model = lgb.Booster(model_file=str(MODEL_DIR / "candidate" / "model.lgb"))
+            explainer = shap.TreeExplainer(model)
+
+        shap_values = explainer.shap_values(X_sample)
+        if isinstance(shap_values, list):
+            shap_values = shap_values[1]
+
+        mean_shap = np.abs(shap_values).mean(axis=0)
+        current_shap = {f: round(float(v), 4) for f, v in zip(features, mean_shap)}
+
+    except Exception as e:
+        print(f"  [warn] SHAP computation failed ({e})")
+        return {"skipped": True, "reason": str(e)}
+
+    # Compare rankings
+    baseline_ranked = sorted(baseline_shap.keys(), key=lambda f: baseline_shap[f], reverse=True)
+    current_ranked  = sorted(current_shap.keys(),  key=lambda f: current_shap[f],  reverse=True)
+
+    rank_shifts = {}
+    alarmed_features = []
+    for feat in features:
+        if feat not in baseline_shap or feat not in current_shap:
+            continue
+        baseline_rank = baseline_ranked.index(feat) + 1 if feat in baseline_ranked else None
+        current_rank  = current_ranked.index(feat)  + 1 if feat in current_ranked  else None
+        if baseline_rank is None or current_rank is None:
+            continue
+
+        rank_shift = abs(current_rank - baseline_rank)
+        baseline_mag = baseline_shap[feat]
+        current_mag  = current_shap[feat]
+        mag_change_pct = round(
+            abs(current_mag - baseline_mag) / (baseline_mag + 1e-9) * 100, 1
+        )
+
+        rank_alarm = rank_shift > SHAP_RANK_SHIFT_ALARM
+        mag_alarm  = (abs(current_mag - baseline_mag) / (baseline_mag + 1e-9)) > SHAP_MAG_CHANGE_ALARM
+
+        rank_shifts[feat] = {
+            "baseline_rank":   baseline_rank,
+            "current_rank":    current_rank,
+            "rank_shift":      rank_shift,
+            "baseline_shap":   baseline_mag,
+            "current_shap":    current_mag,
+            "magnitude_change_pct": mag_change_pct,
+            "rank_alarm":      rank_alarm,
+            "magnitude_alarm": mag_alarm,
+        }
+
+        if rank_alarm or mag_alarm:
+            alarmed_features.append(feat)
+            flags = []
+            if rank_alarm: flags.append(f"rank shifted {rank_shift} positions")
+            if mag_alarm:  flags.append(f"magnitude changed {mag_change_pct}%")
+            print(f"  [ALARM] {feat:<35} {', '.join(flags)}")
+        else:
+            print(f"  [ok]    {feat:<35} rank {baseline_rank}->{current_rank}  "
+                  f"SHAP {baseline_mag:.4f}->{current_mag:.4f}")
+
+    top_feature_changed = (
+        len(baseline_ranked) > 0 and len(current_ranked) > 0 and
+        baseline_ranked[0] != current_ranked[0]
+    )
+    if top_feature_changed:
+        print(f"  [ALARM] Top feature changed: {baseline_ranked[0]} -> {current_ranked[0]}")
+
+    all_ok = len(alarmed_features) == 0 and not top_feature_changed
+    print(f"  Overall: {'ok - attribution stable' if all_ok else 'DRIFT DETECTED in feature attribution'}")
+
+    return {
+        "baseline_shap":       baseline_shap,
+        "current_shap":        current_shap,
+        "feature_details":     rank_shifts,
+        "alarmed_features":    alarmed_features,
+        "top_feature_baseline": baseline_ranked[0] if baseline_ranked else None,
+        "top_feature_current":  current_ranked[0]  if current_ranked  else None,
+        "top_feature_changed":  top_feature_changed,
+        "all_ok":              all_ok,
+    }
+
+
 # ── alarm & retrain trigger ───────────────────────────────────────────────────
 
 def write_alarm_to_postgres(psi: float, csi_results: dict):
@@ -443,18 +583,22 @@ def main():
     if alarmed_features:
         print(f"\n  Features with significant shift: {alarmed_features}")
 
+    # 4. Feature attribution drift — SHAP comparison vs baseline
+    shap_drift = check_feature_attribution_drift(recent_features)
+
     # Log to MLflow
     log_to_mlflow(score_psi, csi_results, flag)
 
-    # Build report — includes both data quality and model drift
+    # Build report — data quality + model drift + feature attribution drift
     report = {
-        "run_time":          datetime.now().isoformat(),
-        "data_quality":      dq_results,
-        "score_psi":         score_psi,
-        "score_psi_flag":    flag,
-        "csi_results":       csi_results,
-        "alarmed_features":  alarmed_features,
-        "retrain_triggered": False,
+        "run_time":              datetime.now().isoformat(),
+        "data_quality":          dq_results,
+        "score_psi":             score_psi,
+        "score_psi_flag":        flag,
+        "csi_results":           csi_results,
+        "alarmed_features":      alarmed_features,
+        "shap_drift":            shap_drift,
+        "retrain_triggered":     False,
     }
 
     # Trigger retrain if PSI exceeds alarm threshold
