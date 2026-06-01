@@ -2,22 +2,27 @@
 monitoring/monitor.py
 ======================
 CS611 MLE Group Project — Dengue Outbreak Risk Prediction
-Model monitoring: PSI / CSI drift detection + retrain trigger.
+Model monitoring: PSI / CSI drift detection + data quality checks + retrain trigger.
 
 Scheduled via Airflow (Wed 06:00 SGT — see airflow/dags/retrain_dag.py).
 
 What this script does
 ---------------------
-1. Loads recent model predictions from operational.risk_tier (Postgres)
+1. DATA QUALITY CHECKS — pipeline health before model checks:
+   - Freshness: how old is the latest Gold snapshot?
+   - Completeness: null rates for key features
+   - Subzone coverage: expected ~320 subzones in latest snapshot
+   - Cluster staleness: cluster rolling counts suspiciously near zero?
+   - Rainfall staleness: rainfall lags all zero (weather ingest broken)?
+2. Loads recent model predictions from operational.risk_tier (Postgres)
    and compares score distribution to the training baseline.
-2. Computes PSI (Population Stability Index) on prediction scores.
-   PSI < 0.10  → stable
-   PSI 0.10-0.20 → minor shift, log warning
-   PSI > 0.20  → significant drift, raise alarm
-3. Computes CSI (Characteristic Stability Index) per feature —
-   checks if individual feature distributions have shifted vs training.
-4. Logs all metrics to MLflow.
-5. If PSI > 0.20: writes a drift alarm to operational.drift_alarms
+3. Computes PSI (Population Stability Index) on prediction scores.
+   PSI < 0.10  -> stable
+   PSI 0.10-0.20 -> minor shift, log warning
+   PSI > 0.20  -> significant drift, raise alarm
+4. Computes CSI (Characteristic Stability Index) per feature.
+5. Logs all metrics to MLflow.
+6. If PSI > 0.20: writes a drift alarm to operational.drift_alarms
    and triggers the retrain DAG via Airflow REST API.
 
 Drift context
@@ -66,6 +71,134 @@ FEATURES = [
     "population", "elderly_pct", "area_km2", "population_density",
     "vulnerability_index",
 ]
+
+
+# ── Data quality checks ───────────────────────────────────────────────────────
+
+# Expected values for quality gates
+EXPECTED_SUBZONES       = 320   # residential subzones in Singapore
+MAX_FRESHNESS_DAYS      = 21    # SGCharts is bi-weekly; >21 days = stale
+MAX_NULL_RATE           = 0.05  # >5% nulls in a feature = problem
+MIN_CLUSTER_COUNT       = 0.5   # avg cluster rolling count below this = SGCharts stale
+MIN_RAINFALL_MM         = 0.01  # avg rainfall lag below this = weather ingest stale
+
+
+def check_data_quality() -> dict:
+    """
+    Check pipeline data quality — runs before model drift checks.
+
+    Checks:
+    1. Freshness    — how old is the latest Gold snapshot date?
+    2. Completeness — null rates for key features in latest snapshot
+    3. Coverage     — how many subzones in latest snapshot vs expected 320
+    4. Cluster data — cluster rolling counts suspiciously near zero (SGCharts stale?)
+    5. Rainfall data — rainfall lags all near zero (weather ingest broken?)
+
+    Returns a dict of check results with pass/fail flags.
+    Falls back to local Gold parquet if Postgres unavailable.
+    """
+    print("\n[data quality] Checking pipeline health")
+    checks = {}
+
+    try:
+        df = pd.read_parquet(GOLD / "subzone_features.parquet")
+        df["date"] = pd.to_datetime(df["date"])
+        latest_date = df["date"].max()
+        latest = df[df["date"] == latest_date]
+    except Exception as e:
+        print(f"  [error] Cannot load Gold parquet: {e}")
+        return {"error": str(e), "all_pass": False}
+
+    # 1. Freshness — days since last snapshot
+    days_old = (datetime.now() - latest_date.to_pydatetime()).days
+    freshness_pass = days_old <= MAX_FRESHNESS_DAYS
+    checks["freshness"] = {
+        "latest_snapshot_date": str(latest_date.date()),
+        "days_since_update":    days_old,
+        "threshold_days":       MAX_FRESHNESS_DAYS,
+        "pass":                 freshness_pass,
+        "flag":                 "ok" if freshness_pass else "STALE — pipeline may be broken",
+    }
+    status = "ok" if freshness_pass else "STALE"
+    print(f"  Freshness      : {status} — last snapshot {days_old} days ago ({latest_date.date()})")
+
+    # 2. Completeness — null rates per feature in latest snapshot
+    null_checks = {}
+    any_null_fail = False
+    for feat in FEATURES:
+        if feat not in latest.columns:
+            continue
+        null_rate = round(latest[feat].isna().mean(), 4)
+        passed    = null_rate <= MAX_NULL_RATE
+        null_checks[feat] = {"null_rate": null_rate, "pass": passed}
+        if not passed:
+            any_null_fail = True
+            print(f"  Null rate FAIL : {feat} = {null_rate:.1%} (threshold {MAX_NULL_RATE:.0%})")
+
+    checks["completeness"] = {
+        "feature_null_rates": null_checks,
+        "any_fail":           any_null_fail,
+        "pass":               not any_null_fail,
+        "flag":               "ok" if not any_null_fail else "NULL RATE EXCEEDED",
+    }
+    if not any_null_fail:
+        print(f"  Completeness   : ok — all features within null threshold")
+
+    # 3. Coverage — subzone count in latest snapshot
+    subzone_count = latest["subzone_name"].nunique() if "subzone_name" in latest.columns else len(latest)
+    coverage_pass = subzone_count >= (EXPECTED_SUBZONES * 0.9)  # allow 10% missing
+    checks["coverage"] = {
+        "subzone_count":    subzone_count,
+        "expected":         EXPECTED_SUBZONES,
+        "pass":             coverage_pass,
+        "flag":             "ok" if coverage_pass else f"LOW COVERAGE — only {subzone_count}/{EXPECTED_SUBZONES} subzones",
+    }
+    status = "ok" if coverage_pass else "LOW"
+    print(f"  Coverage       : {status} — {subzone_count}/{EXPECTED_SUBZONES} subzones in latest snapshot")
+
+    # 4. Cluster staleness — if rolling counts near zero, SGCharts may have stopped
+    cluster_mean = 0.0
+    cluster_pass = True
+    if "cluster_count_rolling2w" in latest.columns:
+        cluster_mean = float(latest["cluster_count_rolling2w"].mean())
+        cluster_pass = cluster_mean >= MIN_CLUSTER_COUNT
+    checks["cluster_activity"] = {
+        "avg_cluster_count_rolling2w": round(cluster_mean, 3),
+        "threshold":                   MIN_CLUSTER_COUNT,
+        "pass":                        cluster_pass,
+        "flag":                        "ok" if cluster_pass else "NEAR ZERO — SGCharts ingest may be stale",
+    }
+    status = "ok" if cluster_pass else "STALE"
+    print(f"  Cluster data   : {status} — avg rolling2w count = {cluster_mean:.2f}")
+
+    # 5. Rainfall staleness — if lags all near zero, weather ingest may be broken
+    rainfall_mean = 0.0
+    rainfall_pass = True
+    if "rainfall_lag1w" in latest.columns:
+        rainfall_mean = float(latest["rainfall_lag1w"].mean())
+        rainfall_pass = rainfall_mean >= MIN_RAINFALL_MM
+    checks["rainfall_data"] = {
+        "avg_rainfall_lag1w_mm": round(rainfall_mean, 4),
+        "threshold_mm":          MIN_RAINFALL_MM,
+        "pass":                  rainfall_pass,
+        "flag":                  "ok" if rainfall_pass else "NEAR ZERO — MSS weather ingest may be broken",
+    }
+    status = "ok" if rainfall_pass else "STALE"
+    print(f"  Rainfall data  : {status} — avg lag1w = {rainfall_mean:.4f} mm")
+
+    # Overall
+    all_pass = (
+        freshness_pass and
+        not any_null_fail and
+        coverage_pass and
+        cluster_pass and
+        rainfall_pass
+    )
+    checks["all_pass"] = all_pass
+    overall = "ALL CHECKS PASSED" if all_pass else "DATA QUALITY ISSUES DETECTED"
+    print(f"  Overall        : {overall}")
+
+    return checks
 
 
 # ── PSI ───────────────────────────────────────────────────────────────────────
@@ -207,7 +340,7 @@ def _score_with_model(df: pd.DataFrame) -> np.ndarray:
             return model.predict(X)
 
     except Exception as e:
-        print(f"  ⚠ Could not score with model ({e}) — using random scores as placeholder")
+        print(f"  [warn] Could not score with model ({e}) - using random scores as placeholder")
         return np.random.uniform(0, 1, len(df))
 
 
@@ -232,7 +365,7 @@ def write_alarm_to_postgres(psi: float, csi_results: dict):
             conn.commit()
         print(f"  [alarm] Written to operational.drift_alarms")
     except Exception as e:
-        print(f"  ⚠ Could not write alarm to Postgres ({e})")
+        print(f"  [warn] Could not write alarm to Postgres ({e})")
 
 
 def trigger_retrain_dag():
@@ -248,9 +381,9 @@ def trigger_retrain_dag():
         if resp.status_code in (200, 201):
             print(f"  [trigger] Retrain DAG triggered — run_id: {resp.json().get('dag_run_id')}")
         else:
-            print(f"  ⚠ Airflow trigger failed: {resp.status_code} {resp.text}")
+            print(f"  [warn] Airflow trigger failed: {resp.status_code} {resp.text}")
     except Exception as e:
-        print(f"  ⚠ Could not trigger Airflow DAG ({e})")
+        print(f"  [warn] Could not trigger Airflow DAG ({e})")
 
 
 def log_to_mlflow(psi: float, csi_results: dict, score_psi_flag: str):
@@ -267,40 +400,43 @@ def log_to_mlflow(psi: float, csi_results: dict, score_psi_flag: str):
                 mlflow.log_metric(f"csi_{feat}", result["csi"])
         print("  [mlflow] Metrics logged")
     except Exception as e:
-        print(f"  ⚠ MLflow logging failed ({e})")
+        print(f"  [warn] MLflow logging failed ({e})")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     print("=" * 60)
-    print("Model Monitoring — PSI / CSI Drift Detection")
+    print("Model Monitoring — Data Quality + PSI / CSI Drift Detection")
     print(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
-    # Load data
+    # 1. Data quality checks — run first before model checks
+    dq_results = check_data_quality()
+
+    # Load data for model drift checks
     baseline_scores, baseline_features = load_baseline()
     recent_scores,   recent_features   = load_recent_predictions()
 
     print(f"\n[data] Baseline: {len(baseline_scores):,} scores | "
           f"Recent: {len(recent_scores):,} scores")
 
-    # PSI on prediction scores
+    # 2. PSI on prediction scores
     score_psi = compute_psi(baseline_scores, recent_scores)
     flag      = psi_flag(score_psi)
-    print(f"\n[psi]  Score PSI: {score_psi:.4f} — {flag}")
+    print(f"\n[psi]  Score PSI: {score_psi:.4f} - {flag}")
     if flag == "minor_shift":
-        print("       ⚠ Minor shift detected — monitoring closely")
+        print("       [warn] Minor shift detected - monitoring closely")
     elif flag == "significant_drift":
-        print("       ✗ SIGNIFICANT DRIFT — retrain required")
+        print("       [ALARM] SIGNIFICANT DRIFT - retrain required")
 
-    # CSI per feature
+    # 3. CSI per feature
     print("\n[csi]  Feature stability:")
     csi_results = compute_csi(baseline_features, recent_features)
     alarmed_features = []
     for feat, result in csi_results.items():
-        icon = "✓" if result["flag"] == "stable" else ("⚠" if result["flag"] == "minor_shift" else "✗")
-        print(f"       {icon} {feat:<35} CSI={result['csi']:.4f}  {result['flag']}")
+        status = "ok" if result["flag"] == "stable" else ("warn" if result["flag"] == "minor_shift" else "ALARM")
+        print(f"       [{status}] {feat:<35} CSI={result['csi']:.4f}  {result['flag']}")
         if result["csi"] > CSI_ALARM:
             alarmed_features.append(feat)
 
@@ -310,9 +446,10 @@ def main():
     # Log to MLflow
     log_to_mlflow(score_psi, csi_results, flag)
 
-    # Build report
+    # Build report — includes both data quality and model drift
     report = {
         "run_time":          datetime.now().isoformat(),
+        "data_quality":      dq_results,
         "score_psi":         score_psi,
         "score_psi_flag":    flag,
         "csi_results":       csi_results,
@@ -322,18 +459,29 @@ def main():
 
     # Trigger retrain if PSI exceeds alarm threshold
     if score_psi > PSI_ALARM:
-        print(f"\n[alarm] PSI {score_psi:.4f} > {PSI_ALARM} threshold — triggering retrain")
+        print(f"\n[alarm] PSI {score_psi:.4f} > {PSI_ALARM} threshold - triggering retrain")
         write_alarm_to_postgres(score_psi, csi_results)
         trigger_retrain_dag()
         report["retrain_triggered"] = True
     else:
-        print(f"\n[ok]   PSI {score_psi:.4f} within acceptable range — no action required")
+        print(f"\n[ok]   PSI {score_psi:.4f} within acceptable range - no action required")
 
-    # Save report
+    # Warn if data quality failed but don't trigger retrain
+    # (data issues need human investigation, not automatic retraining)
+    if not dq_results.get("all_pass", True):
+        print("\n[warn] Data quality checks failed - review pipeline before next retrain")
+        report["data_quality_warning"] = True
+
+    # Save report — convert numpy types to native Python for JSON serialization
+    def _json_safe(obj):
+        if hasattr(obj, "item"):   # numpy scalar
+            return obj.item()
+        raise TypeError(f"Not serializable: {type(obj)}")
+
     report_path = REPORT_DIR / "monitoring_report.json"
     with open(report_path, "w") as f:
-        json.dump(report, f, indent=2)
-    print(f"\n[save] Report → {report_path.name}")
+        json.dump(report, f, indent=2, default=_json_safe)
+    print(f"\n[save] Report -> {report_path.name}")
     print("[done] Monitoring complete.")
 
     return report
