@@ -92,6 +92,25 @@ CREATE TABLE IF NOT EXISTS operational.drift_alarms (
     action          TEXT
 );
 
+-- Shadow deployment scoring table
+-- Candidate model scores real traffic silently — no alerts fired
+-- Used to compare candidate vs production before promotion
+CREATE TABLE IF NOT EXISTS operational.shadow_scores (
+    id                      SERIAL PRIMARY KEY,
+    scored_at               TIMESTAMP DEFAULT NOW(),
+    subzone_name            TEXT NOT NULL,
+    production_score        FLOAT,
+    shadow_score            FLOAT,
+    shadow_model_version    TEXT,
+    case_count              INTEGER,
+    production_tier         TEXT,
+    shadow_tier             TEXT,
+    agreement               BOOLEAN   -- True if both models agree on High vs not-High
+);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_scores_subzone ON operational.shadow_scores (subzone_name);
+CREATE INDEX IF NOT EXISTS idx_shadow_scores_scored_at ON operational.shadow_scores (scored_at);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_risk_tier_week ON operational.risk_tier (week_start);
 CREATE INDEX IF NOT EXISTS idx_confirmed_cases_subzone ON operational.confirmed_cases (subzone_name);

@@ -64,11 +64,16 @@ FEATURES = [
 
 # ── Global state ──────────────────────────────────────────────────────────────
 app_state = {
-    "model":        None,
-    "model_type":   None,
-    "redis_client": None,
-    "engine":       None,
-    "gold_features": None,   # static features per subzone (latest snapshot)
+    "model":               None,
+    "model_type":          None,
+    "redis_client":        None,
+    "engine":              None,
+    "gold_features":       None,
+    # Shadow deployment — candidate model runs silently on live traffic
+    "shadow_model":        None,
+    "shadow_model_type":   None,
+    "shadow_model_version": "candidate",
+    "shadow_enabled":      False,
 }
 
 
@@ -107,6 +112,44 @@ def load_model():
         raise
 
 
+def load_shadow_model():
+    """
+    Load shadow (candidate) model for silent parallel scoring.
+    Tries MLflow Staging stage first, falls back to local candidate file.
+    Shadow model scores every live case but never fires alerts.
+    """
+    try:
+        import mlflow
+        mlflow.set_tracking_uri(MLFLOW_URI)
+        model = mlflow.pyfunc.load_model(f"models:/{MODEL_NAME}/Staging")
+        logger.info("Shadow model loaded from MLflow Staging")
+        return model, "mlflow", "Staging"
+    except Exception:
+        pass
+
+    try:
+        import json
+        meta_path = f"{MODEL_DIR}/candidate_meta.json"
+        with open(meta_path) as f:
+            meta = json.load(f)
+        model_type = meta["model_type"]
+
+        if model_type == "xgboost":
+            import xgboost as xgb
+            model = xgb.XGBClassifier()
+            model.load_model(f"{MODEL_DIR}/model.xgb")
+            logger.info("Shadow model loaded from local candidate (xgboost)")
+            return model, "xgboost", "candidate-local"
+        else:
+            import lightgbm as lgb
+            model = lgb.Booster(model_file=f"{MODEL_DIR}/model.lgb")
+            logger.info("Shadow model loaded from local candidate (lightgbm)")
+            return model, "lightgbm", "candidate-local"
+    except Exception as e:
+        logger.warning(f"Shadow model unavailable ({e}) — shadow scoring disabled")
+        return None, None, None
+
+
 def load_gold_features():
     """Load latest static features per subzone from Gold parquet."""
     try:
@@ -128,10 +171,19 @@ async def lifespan(app: FastAPI):
     """Load model and connections at startup, clean up at shutdown."""
     logger.info("Starting up — loading model and connections")
 
-    # Model
+    # Production model
     model, model_type = load_model()
     app_state["model"]      = model
     app_state["model_type"] = model_type
+
+    # Shadow (candidate) model — silent parallel scoring
+    shadow_model, shadow_type, shadow_version = load_shadow_model()
+    app_state["shadow_model"]         = shadow_model
+    app_state["shadow_model_type"]    = shadow_type
+    app_state["shadow_model_version"] = shadow_version
+    app_state["shadow_enabled"]       = shadow_model is not None
+    if app_state["shadow_enabled"]:
+        logger.info(f"Shadow deployment enabled — version: {shadow_version}")
 
     # Gold static features
     app_state["gold_features"] = load_gold_features()
@@ -253,6 +305,73 @@ def compute_alert_score(model_score: float, vulnerability_index: float, case_cou
     return round(model_score * vulnerability_index * math.log(case_count + 1), 4)
 
 
+# ── Shadow deployment ─────────────────────────────────────────────────────────
+
+def score_with_shadow(subzone_name: str) -> float | None:
+    """Score subzone with shadow (candidate) model. Returns None if disabled."""
+    if not app_state["shadow_enabled"]:
+        return None
+    try:
+        model      = app_state["shadow_model"]
+        model_type = app_state["shadow_model_type"]
+        X          = get_static_features(subzone_name).reshape(1, -1)
+
+        online = get_online_features(subzone_name)
+        vuln_idx = FEATURES.index("vulnerability_index") if "vulnerability_index" in FEATURES else -1
+        if vuln_idx >= 0:
+            X[0, vuln_idx] = online["vulnerability_index"]
+
+        if model_type == "lightgbm":
+            import lightgbm as lgb
+            return float(model.predict(X)[0])
+        elif model_type == "mlflow":
+            return float(model.predict(pd.DataFrame(X, columns=FEATURES))[0])
+        else:
+            return float(model.predict_proba(X)[0, 1])
+    except Exception as e:
+        logger.warning(f"Shadow scoring failed for {subzone_name}: {e}")
+        return None
+
+
+def write_shadow_score(subzone_name: str, production_score: float,
+                       shadow_score: float, case_count: int):
+    """
+    Write shadow vs production scores to operational.shadow_scores.
+    Called as a background task — never blocks the alert path.
+    Agreement = both models agree on High (>=0.6) vs not-High.
+    """
+    engine = app_state["engine"]
+    if engine is None:
+        return
+    try:
+        prod_tier   = "High" if production_score >= 0.6 else ("Medium" if production_score >= 0.3 else "Low")
+        shadow_tier = "High" if shadow_score >= 0.6 else ("Medium" if shadow_score >= 0.3 else "Low")
+        agreement   = (production_score >= 0.6) == (shadow_score >= 0.6)
+
+        with engine.connect() as conn:
+            conn.execute(text("""
+                INSERT INTO operational.shadow_scores
+                    (subzone_name, production_score, shadow_score,
+                     shadow_model_version, case_count,
+                     production_tier, shadow_tier, agreement)
+                VALUES
+                    (:subzone, :prod, :shadow, :version,
+                     :cases, :prod_tier, :shadow_tier, :agreement)
+            """), {
+                "subzone":    subzone_name,
+                "prod":       production_score,
+                "shadow":     shadow_score,
+                "version":    app_state["shadow_model_version"],
+                "cases":      case_count,
+                "prod_tier":  prod_tier,
+                "shadow_tier": shadow_tier,
+                "agreement":  agreement,
+            })
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Could not write shadow score: {e}")
+
+
 # ── Background tasks ──────────────────────────────────────────────────────────
 
 async def listen_for_cases():
@@ -315,11 +434,77 @@ def write_alert_to_postgres(subzone_name: str, score: float,
 @app.get("/health")
 def health():
     return {
-        "status":     "ok",
-        "model":      app_state["model_type"],
-        "redis":      app_state["redis_client"] is not None,
-        "postgres":   app_state["engine"] is not None,
+        "status":          "ok",
+        "model":           app_state["model_type"],
+        "redis":           app_state["redis_client"] is not None,
+        "postgres":        app_state["engine"] is not None,
+        "shadow_enabled":  app_state["shadow_enabled"],
+        "shadow_version":  app_state["shadow_model_version"],
     }
+
+
+@app.get("/shadow/comparison")
+def shadow_comparison():
+    """
+    Compare shadow (candidate) vs production model on recent live traffic.
+    Returns agreement rate, score differences, and tier-level breakdown.
+    Use this to decide whether to promote the candidate to production.
+    Promote when: agreement >= 90% sustained over 7+ days.
+    """
+    engine = app_state["engine"]
+    if engine is None:
+        return {"error": "Postgres not connected"}
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT
+                    COUNT(*)                                        AS total_cases,
+                    ROUND(AVG(CASE WHEN agreement THEN 1.0 ELSE 0.0 END) * 100, 1)
+                                                                    AS agreement_pct,
+                    ROUND(AVG(ABS(production_score - shadow_score))::numeric, 4)
+                                                                    AS avg_score_diff,
+                    ROUND(MAX(ABS(production_score - shadow_score))::numeric, 4)
+                                                                    AS max_score_diff,
+                    SUM(CASE WHEN production_tier = 'High' AND shadow_tier != 'High'
+                             THEN 1 ELSE 0 END)                     AS prod_high_shadow_missed,
+                    SUM(CASE WHEN shadow_tier = 'High' AND production_tier != 'High'
+                             THEN 1 ELSE 0 END)                     AS shadow_high_prod_missed,
+                    MIN(scored_at)                                  AS window_start,
+                    MAX(scored_at)                                  AS window_end,
+                    COUNT(DISTINCT shadow_model_version)            AS shadow_versions
+                FROM operational.shadow_scores
+                WHERE scored_at >= NOW() - INTERVAL '7 days'
+            """)).fetchone()
+
+        if not rows or rows[0] == 0:
+            return {
+                "message": "No shadow scores yet — submit cases via /cases/confirmed to populate",
+                "shadow_enabled": app_state["shadow_enabled"],
+            }
+
+        agreement_pct = float(rows[1] or 0)
+        recommendation = (
+            "READY TO PROMOTE — agreement >= 90% sustained"
+            if agreement_pct >= 90 else
+            "NOT READY — monitor for more traffic before promoting"
+        )
+
+        return {
+            "window":                 "last 7 days",
+            "total_cases_scored":     rows[0],
+            "agreement_pct":          agreement_pct,
+            "avg_score_diff":         float(rows[2] or 0),
+            "max_score_diff":         float(rows[3] or 0),
+            "prod_high_shadow_missed": rows[4],
+            "shadow_high_prod_missed": rows[5],
+            "window_start":           str(rows[6]),
+            "window_end":             str(rows[7]),
+            "shadow_model_version":   app_state["shadow_model_version"],
+            "recommendation":         recommendation,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.post("/cases/confirmed", response_model=ScoreResponse)
@@ -370,6 +555,15 @@ def submit_confirmed_case(case: ConfirmedCase, background_tasks: BackgroundTasks
             vulnerability_index, case_count, alert_score
         )
         logger.info(f"ALERT triggered for {case.subzone_name} — score {alert_score:.4f}")
+
+    # Shadow deployment — score silently with candidate model, never fires alert
+    if app_state["shadow_enabled"]:
+        shadow_score = score_with_shadow(case.subzone_name)
+        if shadow_score is not None:
+            background_tasks.add_task(
+                write_shadow_score,
+                case.subzone_name, model_score, shadow_score, case_count
+            )
 
     latency_ms = (datetime.now() - start).total_seconds() * 1000
 
