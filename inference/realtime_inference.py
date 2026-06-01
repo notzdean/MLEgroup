@@ -33,12 +33,14 @@ import math
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import AsyncGenerator
 
 import numpy as np
 import pandas as pd
 import redis
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 
@@ -76,6 +78,41 @@ app_state = {
     "shadow_model_version": "candidate",
     "shadow_enabled":      False,
 }
+
+
+# ── SSE alert broadcast ───────────────────────────────────────────────────────
+# Each connected /alerts/stream client gets its own asyncio.Queue.
+# When an alert fires, broadcast_alert() pushes to every queue.
+# The generator yields SSE-formatted events until the client disconnects.
+
+_alert_subscribers: set[asyncio.Queue] = set()
+
+
+def broadcast_alert(payload: dict):
+    """Push alert payload to all connected SSE clients (CDC Officer devices)."""
+    for q in _alert_subscribers:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            pass
+
+
+async def alert_event_generator() -> AsyncGenerator[str, None]:
+    """SSE generator — keeps HTTP connection open, streams alerts as they arrive."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=20)
+    _alert_subscribers.add(q)
+    try:
+        # Send a heartbeat immediately so the client knows the connection is live
+        yield "event: connected\ndata: {\"status\": \"monitoring\"}\n\n"
+        while True:
+            try:
+                payload = await asyncio.wait_for(q.get(), timeout=25)
+                yield f"event: alert\ndata: {json.dumps(payload)}\n\n"
+            except asyncio.TimeoutError:
+                # Heartbeat every 25s to keep connection alive through proxies
+                yield "event: heartbeat\ndata: {}\n\n"
+    finally:
+        _alert_subscribers.discard(q)
 
 
 # ── Model loader ──────────────────────────────────────────────────────────────
@@ -441,7 +478,26 @@ def health():
         "postgres":        app_state["engine"] is not None,
         "shadow_enabled":  app_state["shadow_enabled"],
         "shadow_version":  app_state["shadow_model_version"],
+        "sse_subscribers": len(_alert_subscribers),
     }
+
+
+@app.get("/alerts/stream")
+async def alerts_stream():
+    """
+    Server-Sent Events endpoint for CDC Officer mobile devices.
+    Keeps HTTP connection open. Pushes alert events the instant a hospital
+    submits a confirmed case that crosses the alert threshold.
+    No polling needed — pure push from server to client.
+    """
+    return StreamingResponse(
+        alert_event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering
+        },
+    )
 
 
 @app.get("/shadow/comparison")
@@ -556,6 +612,16 @@ def submit_confirmed_case(case: ConfirmedCase, background_tasks: BackgroundTasks
             vulnerability_index, case_count, alert_score
         )
         logger.info(f"ALERT triggered for {case.subzone_name} — score {alert_score:.4f}")
+        # Push to all connected CDC Officer SSE clients instantly
+        broadcast_alert({
+            "subzone_name":       case.subzone_name,
+            "model_score":        round(model_score, 4),
+            "alert_score":        alert_score,
+            "vulnerability_index": round(vulnerability_index, 4),
+            "case_count":         case_count,
+            "source":             case.source,
+            "timestamp":          datetime.now().isoformat(),
+        })
 
     # Shadow deployment — score silently with candidate model, never fires alert
     if app_state["shadow_enabled"]:
@@ -1196,365 +1262,225 @@ def batch_dashboard():
     return HTMLResponse(content=html)
 
 
-@app.get("/mobile", response_class=HTMLResponse)
-def mobile_emulator():
+@app.get("/hospital", response_class=HTMLResponse)
+def hospital_submission():
     """
-    CDA Officer mobile alert emulator.
-    Simulates the real-time push notification a CDC Officer receives
-    when a confirmed case triggers an alert.
-    Connects live to the /cases/confirmed endpoint.
+    Hospital / GP Clinic case submission portal.
+    Desktop web UI for healthcare staff to submit confirmed dengue cases.
+    In production this would be replaced by automated HIS API calls.
+    Submits to POST /cases/confirmed and shows the scoring result.
     """
     html = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CDA Officer Mobile — RT Alert Emulator</title>
-<link href="https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>Dengue Case Notification — Healthcare Portal</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-    min-height:100vh; display:flex; align-items:center; justify-content:center;
-    font-family:'Space Grotesk',sans-serif;
-    padding: 20px;
-  }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4f8; color: #1a1a2e; min-height: 100vh; }
 
-  .scene {
-    display:flex; gap:60px; align-items:flex-start; flex-wrap:wrap; justify-content:center;
+  .topbar {
+    background: #fff; border-bottom: 3px solid #c0392b;
+    padding: 0 32px; display: flex; align-items: center; gap: 16px; height: 60px;
   }
+  .logo { width: 36px; height: 36px; background: #c0392b; border-radius: 6px;
+          display: flex; align-items: center; justify-content: center; color: #fff; font-weight: bold; font-size: 18px; }
+  .topbar-title { font-size: 15px; font-weight: 600; color: #1a1a2e; }
+  .topbar-sub   { font-size: 11px; color: #888; margin-top: 1px; }
+  .topbar-right { margin-left: auto; font-size: 12px; color: #888; }
 
-  /* Phone frame */
-  .phone {
-    width: 320px;
-    background: #1c1c1e;
-    border-radius: 50px;
-    padding: 12px;
-    box-shadow:
-      0 0 0 2px #3a3a3c,
-      0 40px 80px rgba(0,0,0,.6),
-      inset 0 0 0 1px rgba(255,255,255,.05);
-    position:relative;
-  }
-  .phone-screen {
-    background: #000;
-    border-radius: 40px;
-    overflow: hidden;
-    min-height: 620px;
-    position:relative;
-  }
-  .notch {
-    width: 120px; height: 30px;
-    background: #1c1c1e;
-    border-radius: 0 0 20px 20px;
-    margin: 0 auto;
-    position:relative; z-index:10;
-  }
+  .page { max-width: 900px; margin: 32px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 
-  /* Lock screen */
-  .lock-screen {
-    background: linear-gradient(180deg, #1a1a2e 0%, #0d1117 100%);
-    min-height: 590px;
-    padding: 20px;
-    display:flex; flex-direction:column;
+  .card {
+    background: #fff; border-radius: 10px; padding: 28px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
   }
-  .status-bar {
-    display:flex; justify-content:space-between; align-items:center;
-    font-size:12px; color:#fff; padding:4px 8px 12px;
-  }
-  .time-display {
-    text-align:center; margin: 20px 0 30px;
-  }
-  .time-display .time {
-    font-size:56px; font-weight:300; color:#fff; letter-spacing:-2px;
-    line-height:1;
-  }
-  .time-display .date {
-    font-size:14px; color:rgba(255,255,255,.7); margin-top:4px;
-  }
+  .card-title { font-size: 14px; font-weight: 600; color: #555; text-transform: uppercase;
+                letter-spacing: .06em; margin-bottom: 20px; padding-bottom: 10px;
+                border-bottom: 1px solid #eee; }
 
-  /* Notification card */
-  .notification {
-    background: rgba(255,255,255,.12);
-    backdrop-filter: blur(20px);
-    border-radius:16px;
-    padding:14px;
-    margin-bottom:10px;
-    border:1px solid rgba(255,255,255,.1);
-    transform: translateY(-20px);
-    opacity:0;
-    transition: all .5s cubic-bezier(.34,1.56,.64,1);
+  .form-group { margin-bottom: 18px; }
+  label { display: block; font-size: 12px; font-weight: 600; color: #444;
+          margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+  select, input[type=number], input[type=text] {
+    width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px;
+    font-size: 14px; color: #1a1a2e; background: #fafafa;
+    transition: border .2s;
   }
-  .notification.show {
-    transform: translateY(0);
-    opacity:1;
-  }
-  .notification.alert {
-    background: rgba(239,68,68,.2);
-    border:1px solid rgba(239,68,68,.4);
-    animation: alertPulse 2s ease-in-out infinite;
-  }
-  @keyframes alertPulse {
-    0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
-    50% { box-shadow: 0 0 0 8px rgba(239,68,68,.15); }
-  }
-  .notif-header {
-    display:flex; align-items:center; gap:8px; margin-bottom:8px;
-  }
-  .notif-icon {
-    width:28px; height:28px; border-radius:8px;
-    display:flex; align-items:center; justify-content:center;
-    font-size:14px;
-  }
-  .notif-icon.health { background:#007aff; }
-  .notif-icon.alert-icon { background:#ef4444; }
-  .notif-app { font-size:11px; color:rgba(255,255,255,.6); text-transform:uppercase; letter-spacing:.06em; }
-  .notif-time { font-size:11px; color:rgba(255,255,255,.4); margin-left:auto; }
-  .notif-title { font-size:13px; font-weight:600; color:#fff; margin-bottom:2px; }
-  .notif-body { font-size:12px; color:rgba(255,255,255,.75); line-height:1.4; }
+  select:focus, input:focus { outline: none; border-color: #c0392b; background: #fff; }
 
-  .score-display {
-    display:flex; gap:8px; margin-top:10px;
-  }
-  .score-chip {
-    background:rgba(239,68,68,.25); border:1px solid rgba(239,68,68,.5);
-    border-radius:8px; padding:6px 10px; flex:1; text-align:center;
-  }
-  .score-chip .chip-label { font-size:9px; color:rgba(255,255,255,.5); text-transform:uppercase; letter-spacing:.06em; }
-  .score-chip .chip-value { font-size:16px; font-weight:700; color:#ef4444; font-family:monospace; }
-
-  .action-row {
-    display:flex; gap:8px; margin-top:10px;
-  }
-  .action-btn {
-    flex:1; padding:8px; border-radius:10px; border:none;
-    font-size:12px; font-weight:600; cursor:pointer;
-    font-family:'Space Grotesk',sans-serif;
-  }
-  .action-btn.primary { background:#ef4444; color:#fff; }
-  .action-btn.secondary { background:rgba(255,255,255,.15); color:#fff; }
-
-  /* Control panel */
-  .controls {
-    width:320px;
-    color:#fff;
-  }
-  .controls h2 {
-    font-size:22px; font-weight:700; margin-bottom:4px;
-    background: linear-gradient(135deg, #06b6d4, #3b82f6);
-    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
-  }
-  .controls .desc {
-    font-size:13px; color:rgba(255,255,255,.5); margin-bottom:28px; line-height:1.5;
-  }
-
-  .form-group { margin-bottom:16px; }
-  label { display:block; font-size:11px; color:rgba(255,255,255,.5); text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
-  select, input {
-    width:100%; padding:12px 14px;
-    background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12);
-    border-radius:10px; color:#fff; font-size:14px;
-    font-family:'Space Grotesk',sans-serif;
-    outline:none; transition:border .2s;
-  }
-  select:focus, input:focus { border-color:#06b6d4; }
-  select option { background:#1c1c1e; }
+  .required { color: #c0392b; }
 
   .submit-btn {
-    width:100%; padding:14px;
-    background:linear-gradient(135deg,#ef4444,#dc2626);
-    border:none; border-radius:12px; color:#fff;
-    font-size:15px; font-weight:600; cursor:pointer;
-    font-family:'Space Grotesk',sans-serif;
-    transition:transform .15s, box-shadow .15s;
-    margin-bottom:16px;
+    width: 100%; padding: 13px; background: #c0392b; color: #fff;
+    border: none; border-radius: 6px; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: background .2s; margin-top: 4px;
   }
-  .submit-btn:hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(239,68,68,.4); }
-  .submit-btn:active { transform:translateY(0); }
-  .submit-btn:disabled { opacity:.5; cursor:not-allowed; transform:none; }
+  .submit-btn:hover { background: #a93226; }
+  .submit-btn:disabled { background: #ccc; cursor: not-allowed; }
 
-  .result-box {
-    background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);
-    border-radius:12px; padding:16px; display:none;
+  .notice {
+    background: #fff8e1; border: 1px solid #f9a825; border-radius: 6px;
+    padding: 12px 14px; font-size: 12px; color: #7d6608; margin-top: 16px; line-height: 1.5;
   }
-  .result-box.show { display:block; animation:fadeIn .4s ease; }
-  .result-box.triggered { border-color:rgba(239,68,68,.4); background:rgba(239,68,68,.08); }
-  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
 
-  .result-row {
-    display:flex; justify-content:space-between; align-items:center;
-    padding:8px 0; border-bottom:1px solid rgba(255,255,255,.06); font-size:13px;
+  /* Result card */
+  .result { display: none; }
+  .result.show { display: block; }
+  .result-header {
+    padding: 14px 16px; border-radius: 8px 8px 0 0; color: #fff; font-weight: 600; font-size: 14px;
   }
-  .result-row:last-child { border:none; }
-  .result-key { color:rgba(255,255,255,.5); }
-  .result-val { font-weight:600; font-family:monospace; }
-  .result-val.red { color:#ef4444; }
-  .result-val.green { color:#10b981; }
-  .result-val.yellow { color:#f59e0b; }
+  .result-header.alert  { background: #c0392b; }
+  .result-header.ok     { background: #1e8449; }
+  .result-body { border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px; padding: 16px; }
+  .result-row { display: flex; justify-content: space-between; padding: 8px 0;
+                border-bottom: 1px solid #f5f5f5; font-size: 13px; }
+  .result-row:last-child { border: none; }
+  .result-key { color: #777; }
+  .result-val { font-weight: 600; font-family: monospace; }
+  .result-val.danger { color: #c0392b; }
+  .result-val.safe   { color: #1e8449; }
+  .latency { font-size: 11px; color: #bbb; text-align: right; margin-top: 8px; font-family: monospace; }
 
-  .latency { font-size:11px; color:rgba(255,255,255,.3); text-align:right; margin-top:8px; font-family:monospace; }
+  /* History table */
+  .history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .history-table th { text-align: left; padding: 7px 10px; background: #f5f5f5;
+                      font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #777; }
+  .history-table td { padding: 7px 10px; border-bottom: 1px solid #f0f0f0; }
+  .history-table tr:last-child td { border: none; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 3px;
+           font-size: 10px; font-weight: bold; color: #fff; }
+  .badge-alert { background: #c0392b; }
+  .badge-ok    { background: #1e8449; }
+  .badge-med   { background: #d68910; }
+  .empty-history { color: #bbb; font-size: 12px; text-align: center; padding: 20px; }
 
-  .error-box {
-    background:rgba(239,68,68,.1); border:1px solid rgba(239,68,68,.3);
-    border-radius:10px; padding:12px; font-size:12px; color:#fca5a5;
-    display:none; margin-bottom:12px;
-  }
-  .error-box.show { display:block; }
+  .error-box { background: #fdecea; border: 1px solid #e74c3c; border-radius: 6px;
+               padding: 10px 14px; font-size: 12px; color: #c0392b; display: none; margin-top: 12px; }
+  .error-box.show { display: block; }
 </style>
 </head>
 <body>
 
-<div class="scene">
+<div class="topbar">
+  <div class="logo">+</div>
+  <div>
+    <div class="topbar-title">MOH Dengue Case Notification Portal</div>
+    <div class="topbar-sub">For use by registered healthcare facilities only</div>
+  </div>
+  <div class="topbar-right" id="clock"></div>
+</div>
 
-  <!-- Phone -->
-  <div class="phone">
-    <div class="phone-screen">
-      <div class="notch"></div>
-      <div class="lock-screen">
-        <div class="status-bar">
-          <span id="clock">--:--</span>
-          <span>CDA · MOH</span>
-          <span>⬛⬛⬛ 📶</span>
-        </div>
-        <div class="time-display">
-          <div class="time" id="bigClock">--:--</div>
-          <div class="date" id="bigDate">Thursday, 22 May 2026</div>
-        </div>
+<div class="page">
 
-        <!-- Idle notification -->
-        <div class="notification show" id="idleNotif">
-          <div class="notif-header">
-            <div class="notif-icon health">🏥</div>
-            <div class="notif-app">CDA Health System</div>
-            <div class="notif-time">Now</div>
-          </div>
-          <div class="notif-title">System Active</div>
-          <div class="notif-body">Monitoring confirmed case stream. Awaiting submissions.</div>
-        </div>
+  <!-- Left: submission form -->
+  <div>
+    <div class="card">
+      <div class="card-title">Submit Confirmed Dengue Case</div>
 
-        <!-- Alert notification (hidden until triggered) -->
-        <div class="notification alert" id="alertNotif" style="display:none">
-          <div class="notif-header">
-            <div class="notif-icon alert-icon">🚨</div>
-            <div class="notif-app">DENGUE ALERT</div>
-            <div class="notif-time" id="alertTime">Now</div>
-          </div>
-          <div class="notif-title" id="alertTitle">High Risk Alert</div>
-          <div class="notif-body" id="alertBody">Alert triggered for subzone</div>
-          <div class="score-display">
-            <div class="score-chip">
-              <div class="chip-label">Model Score</div>
-              <div class="chip-value" id="chipScore">—</div>
-            </div>
-            <div class="score-chip">
-              <div class="chip-label">Alert Score</div>
-              <div class="chip-value" id="chipAlert">—</div>
-            </div>
-            <div class="score-chip">
-              <div class="chip-label">Cases</div>
-              <div class="chip-value" id="chipCases">—</div>
-            </div>
-          </div>
-          <div class="action-row">
-            <button class="action-btn primary">Dispatch Team</button>
-            <button class="action-btn secondary">View Details</button>
-          </div>
-        </div>
+      <div class="form-group">
+        <label>Patient Residential Subzone <span class="required">*</span></label>
+        <input type="text" id="subzoneInput" placeholder="e.g. TAMPINES EAST" list="subzoneList">
+        <datalist id="subzoneList"></datalist>
+      </div>
 
+      <div class="form-group">
+        <label>Number of Confirmed Cases <span class="required">*</span></label>
+        <input type="number" id="caseCount" value="1" min="1" max="50">
+      </div>
+
+      <div class="form-group">
+        <label>Reporting Facility <span class="required">*</span></label>
+        <select id="source">
+          <option value="hospital">Public Hospital (A&E / Inpatient)</option>
+          <option value="clinic">GP / Polyclinic</option>
+          <option value="nea">NEA Field Report</option>
+        </select>
+      </div>
+
+      <div class="error-box" id="errorBox"></div>
+
+      <button class="submit-btn" id="submitBtn" onclick="submitCase()">
+        Submit Case Notification
+      </button>
+
+      <div class="notice">
+        Submission triggers automated risk scoring. If the subzone risk score
+        exceeds the alert threshold, a real-time notification is sent to the
+        assigned CDA Officer at MOH.
+      </div>
+    </div>
+
+    <!-- Result -->
+    <div class="card result" id="resultCard" style="margin-top:20px">
+      <div class="result-header" id="resultHeader">Submission Result</div>
+      <div class="result-body">
+        <div class="result-row"><span class="result-key">Subzone</span>       <span class="result-val" id="resSubzone">-</span></div>
+        <div class="result-row"><span class="result-key">Model Score</span>   <span class="result-val" id="resScore">-</span></div>
+        <div class="result-row"><span class="result-key">Alert Score</span>   <span class="result-val" id="resAlert">-</span></div>
+        <div class="result-row"><span class="result-key">Vulnerability</span> <span class="result-val" id="resVuln">-</span></div>
+        <div class="result-row"><span class="result-key">Cases This Week</span><span class="result-val" id="resCases">-</span></div>
+        <div class="result-row"><span class="result-key">CDA Alert Sent</span><span class="result-val" id="resAlert2">-</span></div>
+        <div class="latency" id="resLatency"></div>
       </div>
     </div>
   </div>
 
-  <!-- Controls -->
-  <div class="controls">
-    <h2>RT Alert Emulator</h2>
-    <p class="desc">Simulates the CDA Officer mobile experience.<br>Submit a confirmed case to trigger the real-time inference pipeline.</p>
-
-    <div class="error-box" id="errorBox"></div>
-
-    <div class="form-group">
-      <label>Subzone</label>
-      <select id="subzoneSelect">
-        <option value="TAMPINES EAST">TAMPINES EAST</option>
-        <option value="BEDOK NORTH">BEDOK NORTH</option>
-        <option value="JURONG WEST CENTRAL">JURONG WEST CENTRAL</option>
-        <option value="WOODLANDS EAST">WOODLANDS EAST</option>
-        <option value="YISHUN CENTRAL">YISHUN CENTRAL</option>
-        <option value="SENGKANG WEST">SENGKANG WEST</option>
-        <option value="PUNGGOL FIELD">PUNGGOL FIELD</option>
-        <option value="ANG MO KIO TOWN CENTRE">ANG MO KIO TOWN CENTRE</option>
-        <option value="BUKIT PANJANG">BUKIT PANJANG</option>
-        <option value="CLEMENTI WEST">CLEMENTI WEST</option>
-      </select>
-    </div>
-
-    <div class="form-group">
-      <label>Confirmed Cases</label>
-      <input type="number" id="caseCount" value="3" min="1" max="50">
-    </div>
-
-    <div class="form-group">
-      <label>Source</label>
-      <select id="source">
-        <option value="hospital">Hospital</option>
-        <option value="clinic">GP Clinic</option>
-        <option value="nea">NEA Field Report</option>
-      </select>
-    </div>
-
-    <button class="submit-btn" id="submitBtn" onclick="submitCase()">
-      Submit Confirmed Case →
-    </button>
-
-    <div class="result-box" id="resultBox">
-      <div class="result-row">
-        <span class="result-key">Subzone</span>
-        <span class="result-val" id="resSubzone">—</span>
-      </div>
-      <div class="result-row">
-        <span class="result-key">Model Score</span>
-        <span class="result-val yellow" id="resScore">—</span>
-      </div>
-      <div class="result-row">
-        <span class="result-key">Vulnerability Index</span>
-        <span class="result-val" id="resVuln">—</span>
-      </div>
-      <div class="result-row">
-        <span class="result-key">Case Count (week)</span>
-        <span class="result-val" id="resCases">—</span>
-      </div>
-      <div class="result-row">
-        <span class="result-key">Alert Score</span>
-        <span class="result-val" id="resAlert">—</span>
-      </div>
-      <div class="result-row">
-        <span class="result-key">Alert Triggered</span>
-        <span class="result-val" id="resTriggered">—</span>
-      </div>
-      <div class="latency" id="resLatency"></div>
+  <!-- Right: recent submissions -->
+  <div>
+    <div class="card">
+      <div class="card-title">Recent Submissions — This Session</div>
+      <table class="history-table">
+        <thead>
+          <tr><th>Time</th><th>Subzone</th><th>Score</th><th>Alert</th></tr>
+        </thead>
+        <tbody id="historyBody">
+          <tr><td colspan="4" class="empty-history">No submissions yet</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
 </div>
 
 <script>
-  // Update clock
+  // Clock
   function updateClock() {
     const now = new Date();
-    const h = String(now.getHours()).padStart(2,'0');
-    const m = String(now.getMinutes()).padStart(2,'0');
-    document.getElementById('clock').textContent = h+':'+m;
-    document.getElementById('bigClock').textContent = h+':'+m;
+    document.getElementById('clock').textContent =
+      now.toLocaleDateString('en-SG', {weekday:'short', day:'numeric', month:'short'}) +
+      '  ' + String(now.getHours()).padStart(2,'0') + ':' +
+      String(now.getMinutes()).padStart(2,'0') + ':' +
+      String(now.getSeconds()).padStart(2,'0');
   }
   updateClock();
   setInterval(updateClock, 1000);
 
+  // Populate subzone datalist from /scores
+  fetch('/scores').then(r => r.json()).then(data => {
+    const dl = document.getElementById('subzoneList');
+    Object.keys(data).sort().forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      dl.appendChild(opt);
+    });
+  }).catch(() => {});
+
+  const history = [];
+
   async function submitCase() {
-    const btn = document.getElementById('submitBtn');
-    const subzone = document.getElementById('subzoneSelect').value;
+    const btn     = document.getElementById('submitBtn');
+    const subzone = document.getElementById('subzoneInput').value.trim().toUpperCase();
     const count   = parseInt(document.getElementById('caseCount').value);
     const source  = document.getElementById('source').value;
     const errBox  = document.getElementById('errorBox');
+
+    if (!subzone) {
+      errBox.textContent = 'Please enter a subzone name.';
+      errBox.classList.add('show');
+      return;
+    }
 
     btn.disabled = true;
     btn.textContent = 'Submitting...';
@@ -1563,63 +1489,302 @@ def mobile_emulator():
     try {
       const resp = await fetch('/cases/confirmed', {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({subzone_name: subzone, case_count: count, source: source})
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ subzone_name: subzone, case_count: count, source: source })
       });
-
-      if (!resp.ok) throw new Error('API returned ' + resp.status);
+      if (!resp.ok) throw new Error('Server returned ' + resp.status);
       const data = await resp.json();
 
-      // Update result box
-      const resultBox = document.getElementById('resultBox');
-      resultBox.className = 'result-box show' + (data.alert_triggered ? ' triggered' : '');
+      // Show result
+      const card = document.getElementById('resultCard');
+      card.classList.add('show');
+      const header = document.getElementById('resultHeader');
+      header.className = 'result-header ' + (data.alert_triggered ? 'alert' : 'ok');
+      header.textContent = data.alert_triggered
+        ? 'ALERT TRIGGERED — CDA Officer Notified'
+        : 'Submitted — Risk Below Alert Threshold';
 
-      document.getElementById('resSubzone').textContent  = data.subzone_name;
-      document.getElementById('resScore').textContent    = data.model_score;
-      document.getElementById('resVuln').textContent     = data.vulnerability_index;
-      document.getElementById('resCases').textContent    = data.current_case_count;
-      document.getElementById('resAlert').textContent    = data.alert_score;
-      document.getElementById('resLatency').textContent  = `Latency: ${data.latency_ms}ms`;
+      document.getElementById('resSubzone').textContent = data.subzone_name;
+      document.getElementById('resScore').textContent   = data.model_score;
+      document.getElementById('resAlert').textContent   = data.alert_score;
+      document.getElementById('resVuln').textContent    = data.vulnerability_index;
+      document.getElementById('resCases').textContent   = data.current_case_count;
+      document.getElementById('resLatency').textContent = 'Scored in ' + data.latency_ms + 'ms';
 
-      const triggered = data.alert_triggered;
-      const tElem = document.getElementById('resTriggered');
-      tElem.textContent = triggered ? '🚨 YES' : '✓ No';
-      tElem.className = 'result-val ' + (triggered ? 'red' : 'green');
+      const alertEl = document.getElementById('resAlert2');
+      alertEl.textContent  = data.alert_triggered ? 'YES' : 'No';
+      alertEl.className    = 'result-val ' + (data.alert_triggered ? 'danger' : 'safe');
 
-      // Phone notification
-      if (triggered) {
-        document.getElementById('idleNotif').style.display = 'none';
-        const alertNotif = document.getElementById('alertNotif');
-        alertNotif.style.display = 'block';
-        setTimeout(() => alertNotif.classList.add('show'), 50);
+      // Add to history
+      const now = new Date();
+      const timeStr = String(now.getHours()).padStart(2,'0') + ':' +
+                      String(now.getMinutes()).padStart(2,'0') + ':' +
+                      String(now.getSeconds()).padStart(2,'0');
+      history.unshift({ time: timeStr, subzone: data.subzone_name,
+                        score: data.model_score, alert: data.alert_triggered });
+      if (history.length > 10) history.pop();
 
-        const now = new Date();
-        document.getElementById('alertTime').textContent =
-          String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
-        document.getElementById('alertTitle').textContent =
-          '🚨 High Risk Alert — ' + data.subzone_name;
-        document.getElementById('alertBody').textContent =
-          `Alert score ${data.alert_score} exceeded threshold. Immediate triage required.`;
-        document.getElementById('chipScore').textContent  = data.model_score;
-        document.getElementById('chipAlert').textContent  = data.alert_score;
-        document.getElementById('chipCases').textContent  = data.current_case_count;
-      } else {
-        // Reset to idle
-        document.getElementById('idleNotif').style.display = 'block';
-        document.getElementById('alertNotif').style.display = 'none';
-        document.getElementById('alertNotif').classList.remove('show');
-      }
+      const tbody = document.getElementById('historyBody');
+      tbody.innerHTML = history.map(h => {
+        const badgeClass = h.alert ? 'badge-alert' : (h.score >= 0.3 ? 'badge-med' : 'badge-ok');
+        const badgeText  = h.alert ? 'ALERT' : (h.score >= 0.3 ? 'Monitor' : 'Low');
+        return '<tr><td>' + h.time + '</td><td>' + h.subzone +
+               '</td><td>' + h.score + '</td><td>' +
+               '<span class="badge ' + badgeClass + '">' + badgeText + '</span></td></tr>';
+      }).join('');
 
     } catch(e) {
-      errBox.textContent = 'Error: ' + e.message + '. Is the FastAPI server running?';
+      errBox.textContent = 'Submission failed: ' + e.message;
       errBox.classList.add('show');
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Submit Confirmed Case →';
+      btn.textContent = 'Submit Case Notification';
     }
   }
 </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
+
+
+@app.get("/mobile", response_class=HTMLResponse)
+def mobile_emulator():
+    """
+    CDA Officer mobile alert receiver.
+    Passively listens for alerts via Server-Sent Events (SSE).
+    Alerts push instantly when a hospital submits a case that crosses the threshold.
+    Officer does not submit anything — pure receiver.
+    """
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CDA Officer - Live Alert Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460); min-height:100vh;
+       display:flex; align-items:center; justify-content:center;
+       font-family:"Space Grotesk",sans-serif; padding:20px; }
+.scene { display:flex; gap:60px; align-items:flex-start; flex-wrap:wrap; justify-content:center; }
+.phone { width:320px; background:#1c1c1e; border-radius:50px; padding:12px;
+         box-shadow:0 0 0 2px #3a3a3c,0 40px 80px rgba(0,0,0,.6); }
+.phone-screen { background:#000; border-radius:40px; overflow:hidden; min-height:620px; position:relative; }
+.notch { width:120px; height:30px; background:#1c1c1e; border-radius:0 0 20px 20px; margin:0 auto; z-index:10; }
+.lock-screen { background:linear-gradient(180deg,#1a1a2e,#0d1117); min-height:590px; padding:20px; display:flex; flex-direction:column; }
+.status-bar { display:flex; justify-content:space-between; font-size:12px; color:#fff; padding:4px 8px 12px; }
+.time-display { text-align:center; margin:20px 0 30px; }
+.time-display .time { font-size:56px; font-weight:300; color:#fff; letter-spacing:-2px; line-height:1; }
+.time-display .date { font-size:14px; color:rgba(255,255,255,.7); margin-top:4px; }
+.notification { background:rgba(255,255,255,.12); backdrop-filter:blur(20px); border-radius:16px;
+                padding:14px; margin-bottom:10px; border:1px solid rgba(255,255,255,.1); }
+.notification.alert-notif { background:rgba(239,68,68,.2); border:1px solid rgba(239,68,68,.4);
+                             animation:alertPulse 2s ease-in-out infinite; }
+@keyframes alertPulse { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0)} 50%{box-shadow:0 0 0 8px rgba(239,68,68,.15)} }
+.notif-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.notif-icon { width:28px; height:28px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:14px; }
+.notif-icon.health { background:#007aff; }
+.notif-icon.danger { background:#ef4444; }
+.notif-app  { font-size:11px; color:rgba(255,255,255,.6); text-transform:uppercase; letter-spacing:.06em; }
+.notif-time { font-size:11px; color:rgba(255,255,255,.4); margin-left:auto; }
+.notif-title { font-size:13px; font-weight:600; color:#fff; margin-bottom:2px; }
+.notif-body  { font-size:12px; color:rgba(255,255,255,.75); line-height:1.4; }
+.chips { display:flex; gap:8px; margin-top:10px; }
+.chip { background:rgba(239,68,68,.25); border:1px solid rgba(239,68,68,.5); border-radius:8px;
+        padding:6px 10px; flex:1; text-align:center; }
+.chip-label { font-size:9px; color:rgba(255,255,255,.5); text-transform:uppercase; letter-spacing:.06em; }
+.chip-value { font-size:15px; font-weight:700; color:#ef4444; font-family:monospace; }
+.actions { display:flex; gap:8px; margin-top:10px; }
+.act-btn { flex:1; padding:8px; border-radius:10px; border:none; font-size:12px; font-weight:600; cursor:pointer; }
+.act-btn.primary   { background:#ef4444; color:#fff; }
+.act-btn.secondary { background:rgba(255,255,255,.15); color:#fff; }
+.info { width:320px; color:#fff; }
+.info h2 { font-size:22px; font-weight:700; margin-bottom:4px;
+           background:linear-gradient(135deg,#06b6d4,#3b82f6);
+           -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.desc { font-size:13px; color:rgba(255,255,255,.5); margin-bottom:24px; line-height:1.5; }
+.status-box { background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12);
+              border-radius:12px; padding:16px; }
+.status-row { display:flex; justify-content:space-between; padding:8px 0;
+              border-bottom:1px solid rgba(255,255,255,.06); font-size:13px; }
+.status-row:last-child { border:none; }
+.status-key { color:rgba(255,255,255,.5); }
+.status-val { font-weight:600; font-family:monospace; }
+.green { color:#10b981; } .red { color:#ef4444; }
+.alert-log { margin-top:16px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);
+             border-radius:12px; padding:12px; max-height:180px; overflow-y:auto; }
+.log-title { font-size:11px; color:rgba(255,255,255,.4); text-transform:uppercase; letter-spacing:.06em; margin-bottom:8px; }
+.log-entry { font-size:11px; color:rgba(255,255,255,.7); padding:4px 0;
+             border-bottom:1px solid rgba(255,255,255,.05); font-family:monospace; }
+.log-entry:last-child { border:none; }
+.log-alert { color:#ef4444; }
+</style>
+</head>
+<body>
+<div class="scene">
+  <div class="phone">
+    <div class="phone-screen">
+      <div class="notch"></div>
+      <div class="lock-screen">
+        <div class="status-bar">
+          <span id="clock">--:--</span>
+          <span>CDA Officer</span>
+          <span>MOH</span>
+        </div>
+        <div class="time-display">
+          <div class="time" id="bigClock">--:--</div>
+          <div class="date" id="bigDate"></div>
+        </div>
+        <div class="notification" id="idleNotif">
+          <div class="notif-header">
+            <div class="notif-icon health">+</div>
+            <div class="notif-app">CDA Alert System</div>
+            <div class="notif-time" id="idleTime">--:--</div>
+          </div>
+          <div class="notif-title">Monitoring Active</div>
+          <div class="notif-body">Connected to live case stream. Awaiting hospital notifications.</div>
+        </div>
+        <div class="notification alert-notif" id="alertNotif" style="display:none">
+          <div class="notif-header">
+            <div class="notif-icon danger">!</div>
+            <div class="notif-app">DENGUE ALERT</div>
+            <div class="notif-time" id="alertTime">--:--</div>
+          </div>
+          <div class="notif-title" id="alertTitle">High Risk Alert</div>
+          <div class="notif-body"  id="alertBody">Alert triggered</div>
+          <div class="chips">
+            <div class="chip"><div class="chip-label">Model Score</div><div class="chip-value" id="chipScore">-</div></div>
+            <div class="chip"><div class="chip-label">Alert Score</div><div class="chip-value" id="chipAlert">-</div></div>
+            <div class="chip"><div class="chip-label">Cases</div>     <div class="chip-value" id="chipCases">-</div></div>
+          </div>
+          <div class="actions">
+            <button class="act-btn primary">Dispatch Team</button>
+            <button class="act-btn secondary" onclick="dismissAlert()">Dismiss</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="info">
+    <h2>CDA Officer Live Monitor</h2>
+    <p class="desc">
+      Passively receives alerts via SSE push.<br>
+      Alerts appear the instant a hospital submits a confirmed case.<br>
+      No action required from the officer.
+    </p>
+    <div class="status-box">
+      <div class="status-row">
+        <span class="status-key">SSE Connection</span>
+        <span class="status-val" id="sseStatus">Connecting...</span>
+      </div>
+      <div class="status-row">
+        <span class="status-key">Alerts Received</span>
+        <span class="status-val" id="alertCount">0</span>
+      </div>
+      <div class="status-row">
+        <span class="status-key">Last Alert Subzone</span>
+        <span class="status-val" id="lastAlert">None</span>
+      </div>
+    </div>
+    <div class="alert-log">
+      <div class="log-title">Alert Log</div>
+      <div id="logEntries">
+        <div style="color:rgba(255,255,255,.3);font-size:11px">Waiting for alerts...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let alertCount = 0;
+
+  function tick() {
+    const now = new Date();
+    const h = String(now.getHours()).padStart(2,'0');
+    const m = String(now.getMinutes()).padStart(2,'0');
+    const s = String(now.getSeconds()).padStart(2,'0');
+    document.getElementById('clock').textContent    = h+':'+m;
+    document.getElementById('bigClock').textContent = h+':'+m;
+    document.getElementById('idleTime').textContent = h+':'+m+':'+s;
+    document.getElementById('bigDate').textContent  =
+      now.toLocaleDateString('en-SG',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  }
+  tick();
+  setInterval(tick, 1000);
+
+  function dismissAlert() {
+    document.getElementById('alertNotif').style.display = 'none';
+    document.getElementById('idleNotif').style.display  = 'block';
+  }
+
+  function showAlert(data) {
+    alertCount++;
+    document.getElementById('alertCount').textContent = alertCount;
+    document.getElementById('lastAlert').textContent  = data.subzone_name;
+
+    const now = new Date();
+    const t   = String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+    document.getElementById('alertTime').textContent  = t;
+    document.getElementById('alertTitle').textContent = 'High Risk: '+data.subzone_name;
+    document.getElementById('alertBody').textContent  =
+      'Alert score '+data.alert_score+' exceeded threshold. Source: '+data.source+'. Triage required.';
+    document.getElementById('chipScore').textContent  = data.model_score;
+    document.getElementById('chipAlert').textContent  = data.alert_score;
+    document.getElementById('chipCases').textContent  = data.case_count;
+
+    document.getElementById('idleNotif').style.display  = 'none';
+    document.getElementById('alertNotif').style.display = 'block';
+
+    // Add to log
+    const log   = document.getElementById('logEntries');
+    const entry = document.createElement('div');
+    entry.className   = 'log-entry log-alert';
+    entry.textContent = t+' ALERT '+data.subzone_name+' score='+data.alert_score;
+    log.insertBefore(entry, log.firstChild);
+    if (log.children.length > 20) log.removeChild(log.lastChild);
+
+    // Auto-dismiss after 15s
+    setTimeout(dismissAlert, 15000);
+  }
+
+  function connectSSE() {
+    const el = document.getElementById('sseStatus');
+    el.textContent = 'Connecting...'; el.className = 'status-val';
+
+    const es = new EventSource('/alerts/stream');
+
+    es.addEventListener('connected', () => {
+      el.textContent = 'LIVE'; el.className = 'status-val green';
+      const log   = document.getElementById('logEntries');
+      const entry = document.createElement('div');
+      const now   = new Date();
+      entry.className   = 'log-entry';
+      entry.textContent = String(now.getHours()).padStart(2,'0')+':'+
+                          String(now.getMinutes()).padStart(2,'0')+
+                          ' Connected to alert stream';
+      log.insertBefore(entry, log.firstChild);
+    });
+
+    es.addEventListener('alert', e => {
+      showAlert(JSON.parse(e.data));
+    });
+
+    es.addEventListener('heartbeat', () => {
+      el.textContent = 'LIVE'; el.className = 'status-val green';
+    });
+
+    es.onerror = () => {
+      el.textContent = 'Reconnecting...'; el.className = 'status-val red';
+      es.close();
+      setTimeout(connectSSE, 3000);
+    };
+  }
+
+  connectSSE();
+</script>
 </body>
 </html>"""
     return HTMLResponse(content=html)
