@@ -1,6 +1,81 @@
 {
-  "run_time": "2026-05-22T13:03:08.250956",
-  "score_psi": 1.7716,
+  "run_time": "2026-06-01T14:32:59.891992",
+  "data_quality": {
+    "freshness": {
+      "latest_snapshot_date": "2020-11-06",
+      "days_since_update": 2033,
+      "threshold_days": 21,
+      "pass": false,
+      "flag": "STALE \u2014 pipeline may be broken"
+    },
+    "completeness": {
+      "feature_null_rates": {
+        "rainfall_lag1w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "rainfall_lag2w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "rainfall_lag4w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "cluster_count_rolling2w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "cluster_count_rolling4w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "population": {
+          "null_rate": 0.1438,
+          "pass": false
+        },
+        "elderly_pct": {
+          "null_rate": 0.1438,
+          "pass": false
+        },
+        "area_km2": {
+          "null_rate": 0.1438,
+          "pass": false
+        },
+        "population_density": {
+          "null_rate": 0.1438,
+          "pass": false
+        },
+        "vulnerability_index": {
+          "null_rate": 0.0,
+          "pass": true
+        }
+      },
+      "any_fail": true,
+      "pass": false,
+      "flag": "NULL RATE EXCEEDED"
+    },
+    "coverage": {
+      "subzone_count": 320,
+      "expected": 320,
+      "pass": true,
+      "flag": "ok"
+    },
+    "cluster_activity": {
+      "avg_cluster_count_rolling2w": 171.714,
+      "threshold": 0.5,
+      "pass": true,
+      "flag": "ok"
+    },
+    "rainfall_data": {
+      "avg_rainfall_lag1w_mm": 13.8347,
+      "threshold_mm": 0.01,
+      "pass": true,
+      "flag": "ok"
+    },
+    "all_pass": false
+  },
+  "score_psi": 2.3947,
   "score_psi_flag": "significant_drift",
   "csi_results": {
     "rainfall_lag1w": {
@@ -51,5 +126,142 @@
     "cluster_count_rolling2w",
     "cluster_count_rolling4w"
   ],
-  "retrain_triggered": true
+  "shap_drift": {
+    "baseline_shap": {
+      "population": 0.5283,
+      "cluster_count_rolling2w": 0.2589,
+      "cluster_count_rolling4w": 0.2351,
+      "population_density": 0.1805,
+      "elderly_pct": 0.1542,
+      "area_km2": 0.1359,
+      "vulnerability_index": 0.0547,
+      "rainfall_lag1w": 0.0467,
+      "rainfall_lag2w": 0.0287,
+      "rainfall_lag4w": 0.0147
+    },
+    "current_shap": {
+      "rainfall_lag1w": 0.0209,
+      "rainfall_lag2w": 0.0062,
+      "rainfall_lag4w": 0.0081,
+      "cluster_count_rolling2w": 0.271,
+      "cluster_count_rolling4w": 0.2124,
+      "population": 0.578,
+      "elderly_pct": 0.2213,
+      "area_km2": 0.1762,
+      "population_density": 0.2324,
+      "vulnerability_index": 0.0749
+    },
+    "feature_details": {
+      "rainfall_lag1w": {
+        "baseline_rank": 8,
+        "current_rank": 8,
+        "rank_shift": 0,
+        "baseline_shap": 0.0467,
+        "current_shap": 0.0209,
+        "magnitude_change_pct": 55.2,
+        "rank_alarm": false,
+        "magnitude_alarm": true
+      },
+      "rainfall_lag2w": {
+        "baseline_rank": 9,
+        "current_rank": 10,
+        "rank_shift": 1,
+        "baseline_shap": 0.0287,
+        "current_shap": 0.0062,
+        "magnitude_change_pct": 78.4,
+        "rank_alarm": false,
+        "magnitude_alarm": true
+      },
+      "rainfall_lag4w": {
+        "baseline_rank": 10,
+        "current_rank": 9,
+        "rank_shift": 1,
+        "baseline_shap": 0.0147,
+        "current_shap": 0.0081,
+        "magnitude_change_pct": 44.9,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "cluster_count_rolling2w": {
+        "baseline_rank": 2,
+        "current_rank": 2,
+        "rank_shift": 0,
+        "baseline_shap": 0.2589,
+        "current_shap": 0.271,
+        "magnitude_change_pct": 4.7,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "cluster_count_rolling4w": {
+        "baseline_rank": 3,
+        "current_rank": 5,
+        "rank_shift": 2,
+        "baseline_shap": 0.2351,
+        "current_shap": 0.2124,
+        "magnitude_change_pct": 9.7,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "population": {
+        "baseline_rank": 1,
+        "current_rank": 1,
+        "rank_shift": 0,
+        "baseline_shap": 0.5283,
+        "current_shap": 0.578,
+        "magnitude_change_pct": 9.4,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "elderly_pct": {
+        "baseline_rank": 5,
+        "current_rank": 4,
+        "rank_shift": 1,
+        "baseline_shap": 0.1542,
+        "current_shap": 0.2213,
+        "magnitude_change_pct": 43.5,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "area_km2": {
+        "baseline_rank": 6,
+        "current_rank": 6,
+        "rank_shift": 0,
+        "baseline_shap": 0.1359,
+        "current_shap": 0.1762,
+        "magnitude_change_pct": 29.7,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "population_density": {
+        "baseline_rank": 4,
+        "current_rank": 3,
+        "rank_shift": 1,
+        "baseline_shap": 0.1805,
+        "current_shap": 0.2324,
+        "magnitude_change_pct": 28.8,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "vulnerability_index": {
+        "baseline_rank": 7,
+        "current_rank": 7,
+        "rank_shift": 0,
+        "baseline_shap": 0.0547,
+        "current_shap": 0.0749,
+        "magnitude_change_pct": 36.9,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      }
+    },
+    "alarmed_features": [
+      "rainfall_lag1w",
+      "rainfall_lag2w"
+    ],
+    "top_feature_baseline": "population",
+    "top_feature_current": "population",
+    "top_feature_changed": false,
+    "all_ok": false
+  },
+  "retrain_triggered": true,
+  "data_quality_warning": true
 }
