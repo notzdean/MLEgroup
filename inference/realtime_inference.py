@@ -1623,3 +1623,191 @@ def mobile_emulator():
 </body>
 </html>"""
     return HTMLResponse(content=html)
+
+
+@app.get("/pest-control", response_class=HTMLResponse)
+def pest_control_dashboard():
+    """
+    Pest Control Operators ranked list.
+    Simple printable table of all subzones sorted by risk score.
+    Covers the Pest Control Operator user story from the proposal:
+    'Ranked list of high-risk subzones with confidence — prioritise contracts,
+    allocate crews to predicted hotspots.'
+    """
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dengue Risk — Pest Control Deployment List</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: Arial, sans-serif; font-size: 13px; background: #f5f5f5; color: #1a1a1a; }
+  .header {
+    background: #1a472a; color: #fff;
+    padding: 16px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .header-title { font-size: 17px; font-weight: bold; }
+  .header-sub { font-size: 11px; color: #a8d5b5; margin-top: 2px; }
+  .controls {
+    background: #fff; border-bottom: 1px solid #ddd;
+    padding: 10px 24px; display: flex; gap: 12px; align-items: center;
+  }
+  .controls label { font-size: 12px; color: #555; }
+  select, input { font-size: 12px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; }
+  .btn { padding: 6px 14px; border: none; border-radius: 4px; font-size: 12px; font-weight: bold; cursor: pointer; }
+  .btn-print { background: #1a472a; color: #fff; }
+  .summary {
+    padding: 10px 24px; background: #fff; border-bottom: 1px solid #eee;
+    display: flex; gap: 24px;
+  }
+  .stat { display: flex; flex-direction: column; }
+  .stat-val { font-size: 22px; font-weight: bold; }
+  .stat-lbl { font-size: 11px; color: #777; text-transform: uppercase; }
+  .stat-high .stat-val { color: #c0392b; }
+  .stat-med  .stat-val { color: #d68910; }
+  .stat-low  .stat-val { color: #1e8449; }
+  .table-wrap { padding: 16px 24px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  thead { background: #1a472a; color: #fff; }
+  th { padding: 9px 12px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  td { padding: 8px 12px; border-bottom: 1px solid #eee; }
+  tr:last-child td { border: none; }
+  tr:hover td { background: #f9f9f9; }
+  .tier-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; color: #fff; }
+  .tier-High   { background: #c0392b; }
+  .tier-Medium { background: #d68910; }
+  .tier-Low    { background: #1e8449; }
+  .score-bar-wrap { width: 80px; background: #eee; border-radius: 3px; height: 8px; display:inline-block; vertical-align:middle; }
+  .score-bar { height: 8px; border-radius: 3px; }
+  .rank-num { font-weight: bold; color: #555; }
+  .timestamp { font-size: 11px; color: #a8d5b5; }
+  @media print {
+    .controls, .btn { display: none !important; }
+    .header { background: #000 !important; -webkit-print-color-adjust: exact; }
+    .tier-badge, .score-bar { -webkit-print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">Dengue Risk — Pest Control Deployment List</div>
+    <div class="header-sub">Weekly fogging allocation · Subzones ranked by P(active cluster in next 14 days)</div>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center">
+    <span class="timestamp" id="genTime"></span>
+    <button class="btn btn-print" onclick="window.print()">Print / Export PDF</button>
+  </div>
+</div>
+
+<div class="controls">
+  <label>Show tier:</label>
+  <select id="tierFilter" onchange="filterTable()">
+    <option value="All">All subzones</option>
+    <option value="High">High risk only</option>
+    <option value="Medium">High + Medium</option>
+  </select>
+  <label style="margin-left:12px">Search:</label>
+  <input type="text" id="searchBox" placeholder="Subzone name..." oninput="filterTable()" style="width:180px">
+  <span style="margin-left:auto;font-size:11px;color:#777" id="rowCount"></span>
+</div>
+
+<div class="summary">
+  <div class="stat stat-high"><span class="stat-val" id="cntHigh">-</span><span class="stat-lbl">High Risk</span></div>
+  <div class="stat stat-med"> <span class="stat-val" id="cntMed">-</span> <span class="stat-lbl">Medium Risk</span></div>
+  <div class="stat stat-low"> <span class="stat-val" id="cntLow">-</span> <span class="stat-lbl">Low Risk</span></div>
+  <div class="stat">          <span class="stat-val" id="cntTotal">-</span><span class="stat-lbl">Total Subzones</span></div>
+</div>
+
+<div class="table-wrap">
+  <table id="rankTable">
+    <thead>
+      <tr>
+        <th>Rank</th>
+        <th>Subzone</th>
+        <th>Risk Tier</th>
+        <th>Model Score</th>
+        <th style="width:100px"></th>
+        <th>Vulnerability</th>
+        <th>Cases This Week</th>
+        <th>Recommended Action</th>
+      </tr>
+    </thead>
+    <tbody id="tableBody">
+      <tr><td colspan="8" style="text-align:center;padding:24px;color:#aaa">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  let allRows = [];
+  const TIER_COLOR = { High: '#c0392b', Medium: '#d68910', Low: '#1e8449' };
+  const ACTION = {
+    High:   'Deploy fogging crew this week',
+    Medium: 'Schedule inspection - monitor closely',
+    Low:    'Routine surveillance only',
+  };
+
+  async function loadData() {
+    try {
+      const resp = await fetch('/scores');
+      const data = await resp.json();
+      allRows = Object.entries(data)
+        .map(([name, s]) => ({ name, ...s }))
+        .sort((a, b) => b.score - a.score)
+        .map((r, i) => ({ ...r, rank: i + 1 }));
+
+      const counts = { High: 0, Medium: 0, Low: 0 };
+      allRows.forEach(r => { if (counts[r.tier] !== undefined) counts[r.tier]++; });
+      document.getElementById('cntHigh').textContent  = counts.High;
+      document.getElementById('cntMed').textContent   = counts.Medium;
+      document.getElementById('cntLow').textContent   = counts.Low;
+      document.getElementById('cntTotal').textContent = allRows.length;
+
+      const now = new Date();
+      document.getElementById('genTime').textContent =
+        'Generated ' + now.toLocaleDateString('en-SG') + ' ' +
+        String(now.getHours()).padStart(2,'0') + ':' +
+        String(now.getMinutes()).padStart(2,'0');
+
+      filterTable();
+    } catch(e) {
+      document.getElementById('tableBody').innerHTML =
+        '<tr><td colspan="8" style="text-align:center;color:#c0392b;padding:20px">Failed to load scores - is the server running?</td></tr>';
+    }
+  }
+
+  function filterTable() {
+    const tier   = document.getElementById('tierFilter').value;
+    const search = document.getElementById('searchBox').value.toLowerCase();
+    const filtered = allRows.filter(r => {
+      const tierOk = tier === 'All' ||
+                     (tier === 'High' && r.tier === 'High') ||
+                     (tier === 'Medium' && (r.tier === 'High' || r.tier === 'Medium'));
+      return tierOk && r.name.toLowerCase().includes(search);
+    });
+    document.getElementById('rowCount').textContent = filtered.length + ' subzones shown';
+    document.getElementById('tableBody').innerHTML = filtered.map(r => {
+      const color    = TIER_COLOR[r.tier] || '#555';
+      const barWidth = Math.round(r.score * 100);
+      return '<tr>' +
+        '<td class="rank-num">' + r.rank + '</td>' +
+        '<td><strong>' + r.name + '</strong></td>' +
+        '<td><span class="tier-badge tier-' + r.tier + '">' + r.tier + '</span></td>' +
+        '<td>' + r.score.toFixed(4) + '</td>' +
+        '<td><div class="score-bar-wrap"><div class="score-bar" style="width:' + barWidth + '%;background:' + color + '"></div></div></td>' +
+        '<td>' + r.vulnerability_index.toFixed(4) + '</td>' +
+        '<td>' + r.case_count + '</td>' +
+        '<td style="color:' + color + ';font-size:11px">' + (ACTION[r.tier] || '') + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  loadData();
+</script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
