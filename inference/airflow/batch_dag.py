@@ -89,6 +89,7 @@ def score_all_subzones(**context):
     features = [
         "rainfall_lag1w", "rainfall_lag2w", "rainfall_lag4w",
         "cluster_count_rolling2w", "cluster_count_rolling4w",
+        "recent_cases_rolling2w", "recent_cases_rolling4w",
         "population", "elderly_pct", "area_km2", "population_density",
         "vulnerability_index",
     ]

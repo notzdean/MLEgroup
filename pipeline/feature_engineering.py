@@ -142,6 +142,41 @@ def add_cluster_rolling(spine: pd.DataFrame, clusters: pd.DataFrame) -> pd.DataF
     return spine
 
 
+# ── recent cases rolling ──────────────────────────────────────────────────────
+
+def add_recent_cases_rolling(spine: pd.DataFrame, clusters: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rolling sum of recent_cases island-wide: 2w and 4w windows.
+
+    recent_cases = new cases reported in this snapshot period (growth rate).
+    A rising recent_cases count signals an accelerating outbreak,
+    distinct from total_cases which only reflects cumulative burden.
+
+    Aggregated island-wide (not per subzone) — same approach as cluster_count_rolling.
+    """
+    print("[features] Rolling recent cases")
+    daily_recent = (clusters.groupby("date")["recent_cases"]
+                             .sum()
+                             .reset_index()
+                             .rename(columns={"recent_cases": "recent_cases_daily"})
+                             .sort_values("date"))
+
+    daily_recent["recent_cases_rolling2w"] = \
+        daily_recent["recent_cases_daily"].rolling(14, min_periods=1).mean()
+    daily_recent["recent_cases_rolling4w"] = \
+        daily_recent["recent_cases_daily"].rolling(28, min_periods=1).mean()
+
+    # Log1p transform — case counts are right-skewed and orders of magnitude
+    # larger than other features. Log scale preserves the growth-rate signal
+    # without dominating tree splits.
+    daily_recent["recent_cases_rolling2w"] = np.log1p(daily_recent["recent_cases_rolling2w"])
+    daily_recent["recent_cases_rolling4w"] = np.log1p(daily_recent["recent_cases_rolling4w"])
+
+    roll_cols = ["date", "recent_cases_rolling2w", "recent_cases_rolling4w"]
+    spine = spine.merge(daily_recent[roll_cols], on="date", how="left")
+    return spine
+
+
 # ── demographics ──────────────────────────────────────────────────────────────
 
 def add_demographics(spine: pd.DataFrame, population: pd.DataFrame, subzones) -> pd.DataFrame:
@@ -414,6 +449,7 @@ def main():
     spine = build_spine(clusters, subzones)
     spine = add_weather_lags(spine, weather)
     spine = add_cluster_rolling(spine, clusters)
+    spine = add_recent_cases_rolling(spine, clusters)
     spine = add_demographics(spine, population, subzones)
     spine, weights = add_vulnerability_index(spine, population, subzones)
     spine = add_spatial_features(spine, clusters, subzones)

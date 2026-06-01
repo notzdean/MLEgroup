@@ -1,19 +1,19 @@
 {
   "model_type": "xgboost",
   "val_metrics": {
-    "val_recall": 0.9936,
-    "val_precision": 0.1998,
-    "val_f1": 0.3327,
-    "val_auc_roc": 0.8512
+    "val_recall": 0.9949,
+    "val_precision": 0.1918,
+    "val_f1": 0.3216,
+    "val_auc_roc": 0.8424
   },
   "params": {
-    "n_estimators": 161,
-    "max_depth": 4,
-    "learning_rate": 0.01026108807642449,
-    "subsample": 0.7390777256625557,
-    "colsample_bytree": 0.7542745675005516,
-    "min_child_weight": 3,
-    "scale_pos_weight": 8.945882548571618
+    "n_estimators": 196,
+    "max_depth": 3,
+    "learning_rate": 0.01011091701847535,
+    "subsample": 0.8067795941644751,
+    "colsample_bytree": 0.6446234862031466,
+    "min_child_weight": 8,
+    "scale_pos_weight": 9.070647922488893
   },
   "features": [
     "rainfall_lag1w",
@@ -21,6 +21,8 @@
     "rainfall_lag4w",
     "cluster_count_rolling2w",
     "cluster_count_rolling4w",
+    "recent_cases_rolling2w",
+    "recent_cases_rolling4w",
     "population",
     "elderly_pct",
     "area_km2",
