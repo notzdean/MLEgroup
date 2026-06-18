@@ -1,6 +1,10 @@
 -- CS611 MLE Group Project — Postgres schema initialisation
 -- Runs automatically on first docker-compose up
 
+-- MLflow and Airflow each need their own database
+SELECT 'CREATE DATABASE mlflow' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'mlflow')\gexec
+SELECT 'CREATE DATABASE airflow' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'airflow')\gexec
+
 -- Schemas
 CREATE SCHEMA IF NOT EXISTS bronze;
 CREATE SCHEMA IF NOT EXISTS silver;
