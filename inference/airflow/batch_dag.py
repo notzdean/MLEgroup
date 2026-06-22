@@ -89,6 +89,7 @@ def score_all_subzones(**context):
     features = [
         "rainfall_lag1w", "rainfall_lag2w", "rainfall_lag4w",
         "cluster_count_rolling2w", "cluster_count_rolling4w",
+        "recent_cases_rolling2w", "recent_cases_rolling4w",
         "population", "elderly_pct", "area_km2", "population_density",
         "vulnerability_index",
     ]
@@ -149,7 +150,7 @@ def write_to_postgres(**context):
     week_start = context["ds"]  # DAG run date
 
     engine = create_engine(db_url)
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         for r in results:
             conn.execute(text("""
                 INSERT INTO operational.risk_tier
@@ -163,7 +164,6 @@ def write_to_postgres(**context):
                 "tier":    r["risk_tier"],
                 "week":    week_start,
             })
-        conn.commit()
     print(f"Written {len(results)} scores to operational.risk_tier")
 
 

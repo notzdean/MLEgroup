@@ -158,7 +158,7 @@ def compute_shap(model, model_type, X, features):
         return {f: round(float(v), 4) for f, v in feature_importance}
 
     except Exception as e:
-        print(f"  ⚠ SHAP failed ({e})")
+        print(f"  [warn] SHAP failed ({e})")
         return {}
 
 
@@ -198,11 +198,11 @@ def evaluate_gate(test_metrics, oot_metrics, shap_dict):
     all_pass = all(gates.values())
 
     print("\n[gate] Promotion gate")
-    print(f"  Recall ≥ {RECALL_GATE} on test    : {'✓' if gates['recall_test_pass'] else '✗'} ({recall_test:.4f})")
-    print(f"  OOT drop ≤ {OOT_DROP_LIMIT*100:.0f}pp              : {'✓' if gates['oot_drop_pass'] else '✗'} ({oot_drop*100:.1f}pp)")
-    print(f"  AUC-ROC ≥ {AUC_GATE} on test     : {'✓' if gates['auc_test_pass'] else '✗'} ({auc_test:.4f})")
-    print(f"  SHAP values logged             : {'✓' if gates['shap_logged'] else '✗'}")
-    print(f"  Overall: {'✓ PASS — promote to Production' if all_pass else '✗ FAIL — keep existing Production model'}")
+    print(f"  Recall >= {RECALL_GATE} on test    : {'PASS' if gates['recall_test_pass'] else 'FAIL'} ({recall_test:.4f})")
+    print(f"  OOT drop <= {OOT_DROP_LIMIT*100:.0f}pp             : {'PASS' if gates['oot_drop_pass'] else 'FAIL'} ({oot_drop*100:.1f}pp)")
+    print(f"  AUC-ROC >= {AUC_GATE} on test     : {'PASS' if gates['auc_test_pass'] else 'FAIL'} ({auc_test:.4f})")
+    print(f"  SHAP values logged             : {'PASS' if gates['shap_logged'] else 'FAIL'}")
+    print(f"  Overall: {'PASS -- promote to Production' if all_pass else 'FAIL -- keep existing Production model'}")
 
     return gates, all_pass
 
@@ -218,7 +218,7 @@ def promote_to_production(model, model_type):
         # Get latest Candidate version
         versions = client.get_latest_versions(MODEL_NAME, stages=["None", "Staging"])
         if not versions:
-            print("  ⚠ No candidate version found in MLflow registry")
+            print("  [warn] No candidate version found in MLflow registry")
             return
 
         latest = sorted(versions, key=lambda v: int(v.version))[-1]
@@ -227,10 +227,10 @@ def promote_to_production(model, model_type):
             version=latest.version,
             stage="Production"
         )
-        print(f"  MLflow: version {latest.version} → Production")
+        print(f"  MLflow: version {latest.version} -> Production")
 
     except Exception as e:
-        print(f"  ⚠ MLflow promotion failed ({e})")
+        print(f"  [warn] MLflow promotion failed ({e})")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -263,7 +263,7 @@ def main():
 
     psi = compute_psi(test_scores, oot_scores)
     psi_flag = "stable" if psi < 0.1 else ("minor shift" if psi < 0.2 else "significant drift")
-    print(f"\n[psi] Score PSI (test → OOT): {psi:.4f} — {psi_flag}")
+    print(f"\n[psi] Score PSI (test -> OOT): {psi:.4f} - {psi_flag}")
 
     # SHAP
     shap_dict = compute_shap(model, model_type, X_test, features)
@@ -293,7 +293,7 @@ def main():
     report_path = REPORT_DIR / "evaluation_report.json"
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
-    print(f"\n[save] Report → {report_path.name}")
+    print(f"\n[save] Report -> {report_path.name}")
 
     if all_pass:
         promote_to_production(model, model_type)

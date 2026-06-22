@@ -5,12 +5,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for geopandas
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libpq-dev \
-    gdal-bin \
-    libgdal-dev \
+# System deps — gcc for compiled packages, libpq for Postgres
+# gdal/geopandas not needed: inference only reads pre-built Gold parquet
+RUN apt-get update && apt-get install -y gcc libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps

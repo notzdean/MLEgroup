@@ -59,6 +59,7 @@ OOT_START  = pd.Timestamp("2020-01-01")
 FEATURES = [
     "rainfall_lag1w", "rainfall_lag2w", "rainfall_lag4w",
     "cluster_count_rolling2w", "cluster_count_rolling4w",
+    "recent_cases_rolling2w", "recent_cases_rolling4w",
     "population", "elderly_pct", "area_km2", "population_density",
     "vulnerability_index",
 ]
@@ -293,8 +294,8 @@ def main():
 
         print(f"  Val metrics: {val_metrics}")
 
-        recall_flag = "✓" if val_metrics["val_recall"] >= RECALL_TARGET else "✗"
-        print(f"  Recall ≥ {RECALL_TARGET}: {recall_flag} ({val_metrics['val_recall']:.4f})")
+        recall_flag = "PASS" if val_metrics["val_recall"] >= RECALL_TARGET else "FAIL"
+        print(f"  Recall >= {RECALL_TARGET}: {recall_flag} ({val_metrics['val_recall']:.4f})")
 
         # Log to MLflow
         log_to_mlflow(model, model_type, best_params, val_metrics, X_train)

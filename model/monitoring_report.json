@@ -1,55 +1,96 @@
 {
-  "run_time": "2026-05-22T13:03:08.250956",
-  "score_psi": 1.7716,
-  "score_psi_flag": "significant_drift",
-  "csi_results": {
-    "rainfall_lag1w": {
-      "csi": 0.376,
-      "flag": "significant_drift"
+  "run_time": "2026-06-22T06:38:18.985131",
+  "data_quality": {
+    "freshness": {
+      "latest_snapshot_date": "2020-11-06",
+      "days_since_update": 2054,
+      "threshold_days": 21,
+      "pass": false,
+      "flag": "STALE \u2014 pipeline may be broken"
     },
-    "rainfall_lag2w": {
-      "csi": 0.5451,
-      "flag": "significant_drift"
+    "completeness": {
+      "feature_null_rates": {
+        "rainfall_lag1w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "rainfall_lag2w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "rainfall_lag4w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "cluster_count_rolling2w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "cluster_count_rolling4w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "recent_cases_rolling2w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "recent_cases_rolling4w": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "population": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "elderly_pct": {
+          "null_rate": 0.0,
+          "pass": true
+        },
+        "area_km2": {
+          "null_rate": 1.0,
+          "pass": false
+        },
+        "population_density": {
+          "null_rate": 1.0,
+          "pass": false
+        },
+        "vulnerability_index": {
+          "null_rate": 0.0,
+          "pass": true
+        }
+      },
+      "any_fail": true,
+      "pass": false,
+      "flag": "NULL RATE EXCEEDED"
     },
-    "rainfall_lag4w": {
-      "csi": 0.6859,
-      "flag": "significant_drift"
+    "coverage": {
+      "subzone_count": 287,
+      "expected": 320,
+      "pass": false,
+      "flag": "LOW COVERAGE \u2014 only 287/320 subzones"
     },
-    "cluster_count_rolling2w": {
-      "csi": 10.1776,
-      "flag": "significant_drift"
+    "cluster_activity": {
+      "avg_cluster_count_rolling2w": 171.714,
+      "threshold": 0.5,
+      "pass": true,
+      "flag": "ok"
     },
-    "cluster_count_rolling4w": {
-      "csi": 11.9537,
-      "flag": "significant_drift"
+    "rainfall_data": {
+      "avg_rainfall_lag1w_mm": 13.8347,
+      "threshold_mm": 0.01,
+      "pass": true,
+      "flag": "ok"
     },
-    "population": {
-      "csi": 0.0,
-      "flag": "stable"
-    },
-    "elderly_pct": {
-      "csi": 0.0,
-      "flag": "stable"
-    },
-    "area_km2": {
-      "csi": 0.0,
-      "flag": "stable"
-    },
-    "population_density": {
-      "csi": 0.0,
-      "flag": "stable"
-    },
-    "vulnerability_index": {
-      "csi": 0.0,
-      "flag": "stable"
-    }
+    "all_pass": false
   },
-  "alarmed_features": [
-    "rainfall_lag1w",
-    "rainfall_lag2w",
-    "rainfall_lag4w",
-    "cluster_count_rolling2w",
-    "cluster_count_rolling4w"
-  ],
-  "retrain_triggered": true
+  "score_psi": 2.1239,
+  "score_psi_flag": "significant_drift",
+  "csi_results": {},
+  "alarmed_features": [],
+  "shap_drift": {
+    "skipped": true,
+    "reason": "No module named 'shap'"
+  },
+  "retrain_triggered": true,
+  "data_quality_warning": true
 }
