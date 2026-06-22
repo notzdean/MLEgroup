@@ -98,6 +98,7 @@ services:
       - ./data:/opt/airflow/data
       - ./model:/opt/airflow/model
       - ./pipeline:/opt/airflow/pipeline
+      - ./monitoring:/opt/airflow/monitoring
       - airflow_logs:/opt/airflow/logs
     ports:
       - "8080:8080"

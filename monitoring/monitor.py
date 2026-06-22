@@ -538,12 +538,17 @@ def log_to_mlflow(psi: float, csi_results: dict, score_psi_flag: str):
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         mlflow.set_experiment("dengue_monitoring")
 
+        metrics = {"score_psi": psi}
+        for feat, result in csi_results.items():
+            metrics[f"csi_{feat}"] = float(result["csi"])
+
+        if len(csi_results) == 0:
+            print("  [warn] No CSI results — only score_psi will be logged")
+
         with mlflow.start_run(run_name=f"monitor_{datetime.now().strftime('%Y%m%d_%H%M')}"):
-            mlflow.log_metric("score_psi", psi)
+            mlflow.log_metrics(metrics)
             mlflow.log_param("score_psi_flag", score_psi_flag)
-            for feat, result in csi_results.items():
-                mlflow.log_metric(f"csi_{feat}", result["csi"])
-        print("  [mlflow] Metrics logged")
+        print(f"  [mlflow] Logged {len(metrics)} metrics ({len(csi_results)} CSI + 1 PSI)")
     except Exception as e:
         print(f"  [warn] MLflow logging failed ({e})")
 
@@ -610,7 +615,11 @@ def main():
     if score_psi > PSI_ALARM:
         print(f"\n[alarm] PSI {score_psi:.4f} > {PSI_ALARM} threshold - triggering retrain")
         write_alarm_to_postgres(score_psi, csi_results)
-        trigger_retrain_dag()
+        import os
+        if os.getenv("SKIP_DAG_TRIGGER") == "true":
+            print("  [info] SKIP_DAG_TRIGGER=true — DAG branch will handle retrain trigger")
+        else:
+            trigger_retrain_dag()
         report["retrain_triggered"] = True
     else:
         print(f"\n[ok]   PSI {score_psi:.4f} within acceptable range - no action required")

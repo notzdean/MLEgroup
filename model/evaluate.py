@@ -50,7 +50,7 @@ RECALL_GATE     = 0.70
 OOT_DROP_LIMIT  = 0.10   # max allowed pp drop from test to OOT
 AUC_GATE        = 0.75
 
-MLFLOW_TRACKING_URI = "http://localhost:5000"
+MLFLOW_TRACKING_URI = "http://172.18.0.4:5000"
 MODEL_NAME          = "dengue_cluster_model"
 
 
