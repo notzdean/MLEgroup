@@ -1,6 +1,7 @@
 /.claude
 /Archives
 /dengue_proposal_v2.pptx
+*.png
 
 # Python
 __pycache__/
