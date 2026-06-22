@@ -166,11 +166,19 @@ def load_shadow_model():
         pass
 
     try:
-        import json
+        import json, joblib as jl
         meta_path = f"{MODEL_DIR}/candidate_meta.json"
         with open(meta_path) as f:
             meta = json.load(f)
         model_type = meta["model_type"]
+
+        # Prefer calibrated joblib — same artifact as Production scoring
+        joblib_path = f"{MODEL_DIR}/best_model_calibrated.joblib"
+        import os
+        if os.path.exists(joblib_path):
+            model = jl.load(joblib_path)
+            logger.info("Shadow model loaded from local candidate (calibrated joblib)")
+            return model, "calibrated", "candidate-local"
 
         if model_type == "xgboost":
             import xgboost as xgb

@@ -324,16 +324,24 @@ def load_recent_predictions(lookback_days: int = 14) -> tuple[np.ndarray, pd.Dat
 
 
 def _score_with_model(df: pd.DataFrame) -> np.ndarray:
-    """Score a dataframe using the saved candidate model."""
+    """Score a dataframe using the calibrated model (consistent with Production)."""
     try:
         meta_path = MODEL_DIR / "candidate" / "candidate_meta.json"
         with open(meta_path) as f:
             meta = json.load(f)
 
-        model_type = meta["model_type"]
-        features   = meta["features"]
+        features = meta["features"]
         X = df[features].fillna(0).values
 
+        # Use calibrated joblib if available — same artifact as Production
+        joblib_path = MODEL_DIR / "candidate" / "best_model_calibrated.joblib"
+        if joblib_path.exists():
+            import joblib
+            model = joblib.load(joblib_path)
+            return model.predict_proba(X)[:, 1]
+
+        # Fallback to raw model if no calibrated joblib
+        model_type = meta["model_type"]
         if model_type == "xgboost":
             import xgboost as xgb
             model = xgb.XGBClassifier()
