@@ -64,11 +64,12 @@ def run_monitoring(**context):
     try:
         with open("/opt/airflow/model/monitoring_report.json") as f:
             report = json.load(f)
-        psi  = report.get("score_psi", 0)
-        flag = report.get("score_psi_flag", "stable")
+        psi             = report.get("score_psi", 0)
+        flag            = report.get("score_psi_flag", "stable")
+        retrain_needed  = report.get("retrain_triggered", False)
         context["ti"].xcom_push(key="score_psi",   value=psi)
-        context["ti"].xcom_push(key="drift_alarm", value=(flag == "significant_drift"))
-        print(f"PSI: {psi:.4f} | Flag: {flag}")
+        context["ti"].xcom_push(key="drift_alarm", value=retrain_needed)
+        print(f"PSI: {psi:.4f} | Flag: {flag} | Retrain needed: {retrain_needed}")
     except Exception as e:
         print(f"Could not read monitoring_report.json ({e}) — assuming no drift")
         context["ti"].xcom_push(key="drift_alarm", value=False)

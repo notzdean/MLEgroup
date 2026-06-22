@@ -1,5 +1,5 @@
 {
-  "run_time": "2026-06-22T06:38:18.985131",
+  "run_time": "2026-06-22T12:51:35.666113",
   "data_quality": {
     "freshness": {
       "latest_snapshot_date": "2020-11-06",
@@ -39,19 +39,19 @@
           "pass": true
         },
         "population": {
-          "null_rate": 0.0,
-          "pass": true
+          "null_rate": 0.1438,
+          "pass": false
         },
         "elderly_pct": {
-          "null_rate": 0.0,
-          "pass": true
+          "null_rate": 0.1438,
+          "pass": false
         },
         "area_km2": {
-          "null_rate": 1.0,
+          "null_rate": 0.1438,
           "pass": false
         },
         "population_density": {
-          "null_rate": 1.0,
+          "null_rate": 0.1438,
           "pass": false
         },
         "vulnerability_index": {
@@ -64,10 +64,10 @@
       "flag": "NULL RATE EXCEEDED"
     },
     "coverage": {
-      "subzone_count": 287,
+      "subzone_count": 320,
       "expected": 320,
-      "pass": false,
-      "flag": "LOW COVERAGE \u2014 only 287/320 subzones"
+      "pass": true,
+      "flag": "ok"
     },
     "cluster_activity": {
       "avg_cluster_count_rolling2w": 171.714,
@@ -83,14 +83,224 @@
     },
     "all_pass": false
   },
-  "score_psi": 2.1239,
+  "score_psi": 0.3318,
   "score_psi_flag": "significant_drift",
-  "csi_results": {},
-  "alarmed_features": [],
-  "shap_drift": {
-    "skipped": true,
-    "reason": "No module named 'shap'"
+  "csi_results": {
+    "rainfall_lag1w": {
+      "csi": 0.376,
+      "flag": "significant_drift"
+    },
+    "rainfall_lag2w": {
+      "csi": 0.5451,
+      "flag": "significant_drift"
+    },
+    "rainfall_lag4w": {
+      "csi": 0.6859,
+      "flag": "significant_drift"
+    },
+    "cluster_count_rolling2w": {
+      "csi": 10.1776,
+      "flag": "significant_drift"
+    },
+    "cluster_count_rolling4w": {
+      "csi": 11.9537,
+      "flag": "significant_drift"
+    },
+    "recent_cases_rolling2w": {
+      "csi": 9.9476,
+      "flag": "significant_drift"
+    },
+    "recent_cases_rolling4w": {
+      "csi": 15.9529,
+      "flag": "significant_drift"
+    },
+    "population": {
+      "csi": 0.0,
+      "flag": "stable"
+    },
+    "elderly_pct": {
+      "csi": 0.0,
+      "flag": "stable"
+    },
+    "area_km2": {
+      "csi": 0.0,
+      "flag": "stable"
+    },
+    "population_density": {
+      "csi": 0.0,
+      "flag": "stable"
+    },
+    "vulnerability_index": {
+      "csi": 0.0,
+      "flag": "stable"
+    }
   },
-  "retrain_triggered": true,
+  "alarmed_features": [
+    "rainfall_lag1w",
+    "rainfall_lag2w",
+    "rainfall_lag4w",
+    "cluster_count_rolling2w",
+    "cluster_count_rolling4w",
+    "recent_cases_rolling2w",
+    "recent_cases_rolling4w"
+  ],
+  "shap_drift": {
+    "baseline_shap": {
+      "population": 0.6584,
+      "cluster_count_rolling2w": 0.5101,
+      "cluster_count_rolling4w": 0.3313,
+      "recent_cases_rolling2w": 0.329,
+      "population_density": 0.2554,
+      "area_km2": 0.1902,
+      "elderly_pct": 0.149,
+      "recent_cases_rolling4w": 0.1352,
+      "vulnerability_index": 0.069,
+      "rainfall_lag1w": 0.0092,
+      "rainfall_lag2w": 0.0,
+      "rainfall_lag4w": 0.0
+    },
+    "current_shap": {
+      "rainfall_lag1w": 0.0097,
+      "rainfall_lag2w": 0.0,
+      "rainfall_lag4w": 0.0,
+      "cluster_count_rolling2w": 0.5164,
+      "cluster_count_rolling4w": 0.3112,
+      "recent_cases_rolling2w": 0.3276,
+      "recent_cases_rolling4w": 0.1347,
+      "population": 0.7112,
+      "elderly_pct": 0.1595,
+      "area_km2": 0.2104,
+      "population_density": 0.2692,
+      "vulnerability_index": 0.0746
+    },
+    "feature_details": {
+      "rainfall_lag1w": {
+        "baseline_rank": 10,
+        "current_rank": 10,
+        "rank_shift": 0,
+        "baseline_shap": 0.0092,
+        "current_shap": 0.0097,
+        "magnitude_change_pct": 5.4,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "rainfall_lag2w": {
+        "baseline_rank": 11,
+        "current_rank": 11,
+        "rank_shift": 0,
+        "baseline_shap": 0.0,
+        "current_shap": 0.0,
+        "magnitude_change_pct": 0.0,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "rainfall_lag4w": {
+        "baseline_rank": 12,
+        "current_rank": 12,
+        "rank_shift": 0,
+        "baseline_shap": 0.0,
+        "current_shap": 0.0,
+        "magnitude_change_pct": 0.0,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "cluster_count_rolling2w": {
+        "baseline_rank": 2,
+        "current_rank": 2,
+        "rank_shift": 0,
+        "baseline_shap": 0.5101,
+        "current_shap": 0.5164,
+        "magnitude_change_pct": 1.2,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "cluster_count_rolling4w": {
+        "baseline_rank": 3,
+        "current_rank": 4,
+        "rank_shift": 1,
+        "baseline_shap": 0.3313,
+        "current_shap": 0.3112,
+        "magnitude_change_pct": 6.1,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "recent_cases_rolling2w": {
+        "baseline_rank": 4,
+        "current_rank": 3,
+        "rank_shift": 1,
+        "baseline_shap": 0.329,
+        "current_shap": 0.3276,
+        "magnitude_change_pct": 0.4,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "recent_cases_rolling4w": {
+        "baseline_rank": 8,
+        "current_rank": 8,
+        "rank_shift": 0,
+        "baseline_shap": 0.1352,
+        "current_shap": 0.1347,
+        "magnitude_change_pct": 0.4,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "population": {
+        "baseline_rank": 1,
+        "current_rank": 1,
+        "rank_shift": 0,
+        "baseline_shap": 0.6584,
+        "current_shap": 0.7112,
+        "magnitude_change_pct": 8.0,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "elderly_pct": {
+        "baseline_rank": 7,
+        "current_rank": 7,
+        "rank_shift": 0,
+        "baseline_shap": 0.149,
+        "current_shap": 0.1595,
+        "magnitude_change_pct": 7.0,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "area_km2": {
+        "baseline_rank": 6,
+        "current_rank": 6,
+        "rank_shift": 0,
+        "baseline_shap": 0.1902,
+        "current_shap": 0.2104,
+        "magnitude_change_pct": 10.6,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "population_density": {
+        "baseline_rank": 5,
+        "current_rank": 5,
+        "rank_shift": 0,
+        "baseline_shap": 0.2554,
+        "current_shap": 0.2692,
+        "magnitude_change_pct": 5.4,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      },
+      "vulnerability_index": {
+        "baseline_rank": 9,
+        "current_rank": 9,
+        "rank_shift": 0,
+        "baseline_shap": 0.069,
+        "current_shap": 0.0746,
+        "magnitude_change_pct": 8.1,
+        "rank_alarm": false,
+        "magnitude_alarm": false
+      }
+    },
+    "alarmed_features": [],
+    "top_feature_baseline": "population",
+    "top_feature_current": "population",
+    "top_feature_changed": false,
+    "all_ok": true
+  },
+  "retrain_triggered": false,
   "data_quality_warning": true
 }

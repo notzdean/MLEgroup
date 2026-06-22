@@ -1,0 +1,17 @@
+FROM apache/airflow:2.9.1-python3.11
+
+USER root
+RUN apt-get update && apt-get install -y libgomp1 && rm -rf /var/lib/apt/lists/*
+
+USER airflow
+RUN pip install --no-cache-dir \
+    scikit-learn \
+    xgboost \
+    lightgbm \
+    optuna \
+    mlflow \
+    geopandas \
+    shap \
+    imbalanced-learn \
+    joblib \
+    "pyarrow>=16.0"

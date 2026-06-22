@@ -619,16 +619,23 @@ def main():
         "retrain_triggered":     False,
     }
 
-    # Trigger retrain if PSI exceeds alarm threshold
-    if score_psi > PSI_ALARM:
-        print(f"\n[alarm] PSI {score_psi:.4f} > {PSI_ALARM} threshold - triggering retrain")
+    # Trigger retrain only when BOTH score distribution shifted AND model attribution drifted.
+    # PSI alone can alarm on genuine epidemic pattern changes (e.g. DENV-3 outbreak) where
+    # the model is still behaving correctly — SHAP stability confirms no model degradation.
+    import os
+    shap_stable = shap_drift.get("all_ok", True)
+    if score_psi > PSI_ALARM and not shap_stable:
+        print(f"\n[alarm] PSI {score_psi:.4f} > {PSI_ALARM} AND feature attribution drifted — triggering retrain")
         write_alarm_to_postgres(score_psi, csi_results)
-        import os
         if os.getenv("SKIP_DAG_TRIGGER") == "true":
             print("  [info] SKIP_DAG_TRIGGER=true — DAG branch will handle retrain trigger")
         else:
             trigger_retrain_dag()
         report["retrain_triggered"] = True
+    elif score_psi > PSI_ALARM and shap_stable:
+        print(f"\n[warn] PSI {score_psi:.4f} > {PSI_ALARM} but feature attribution is stable")
+        print("       Input distribution shifted (e.g. seasonal/epidemic change) — model not degraded, no retrain")
+        report["retrain_triggered"] = False
     else:
         print(f"\n[ok]   PSI {score_psi:.4f} within acceptable range - no action required")
 
