@@ -150,7 +150,7 @@ def write_to_postgres(**context):
     week_start = context["ds"]  # DAG run date
 
     engine = create_engine(db_url)
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         for r in results:
             conn.execute(text("""
                 INSERT INTO operational.risk_tier
@@ -164,7 +164,6 @@ def write_to_postgres(**context):
                 "tier":    r["risk_tier"],
                 "week":    week_start,
             })
-        conn.commit()
     print(f"Written {len(results)} scores to operational.risk_tier")
 
 

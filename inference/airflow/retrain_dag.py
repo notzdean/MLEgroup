@@ -52,12 +52,18 @@ dag = DAG(
 
 # ── Task functions ─────────────────────────────────────────────────────────────
 
+def _subprocess_env():
+    """Return env with HOME set so user-installed packages in ~/.local are found."""
+    import os
+    return {**os.environ, "HOME": "/home/airflow"}
+
+
 def run_feature_engineering(**context):
     """Rebuild Gold feature table with latest data."""
     import subprocess
     result = subprocess.run(
         ["python", "/opt/airflow/pipeline/feature_engineering.py"],
-        capture_output=True, text=True
+        capture_output=True, text=True, env=_subprocess_env()
     )
     print(result.stdout)
     if result.returncode != 0:
@@ -70,7 +76,7 @@ def run_training(**context):
     import subprocess
     result = subprocess.run(
         ["python", "/opt/airflow/model/train.py"],
-        capture_output=True, text=True
+        capture_output=True, text=True, env=_subprocess_env()
     )
     print(result.stdout)
     if result.returncode != 0:
@@ -85,7 +91,7 @@ def run_evaluation(**context):
 
     result = subprocess.run(
         ["python", "/opt/airflow/model/evaluate.py"],
-        capture_output=True, text=True
+        capture_output=True, text=True, env=_subprocess_env()
     )
     print(result.stdout)
     if result.returncode != 0:

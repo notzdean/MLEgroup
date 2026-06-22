@@ -53,10 +53,10 @@ GOLD       = ROOT / "data" / "gold"
 MODEL_DIR  = ROOT / "model"
 REPORT_DIR = ROOT / "model"
 
-MLFLOW_TRACKING_URI = "http://localhost:5000"
-AIRFLOW_API_URL     = "http://localhost:8080/api/v1"
+MLFLOW_TRACKING_URI = "http://172.18.0.4:5000"
+AIRFLOW_API_URL     = "http://172.18.0.5:8080/api/v1"
 AIRFLOW_DAG_ID      = "dengue_retrain_dag"
-POSTGRES_DSN        = "postgresql://dengue:dengue@localhost:5432/dengue"
+POSTGRES_DSN        = "postgresql://dengue:dengue@172.18.0.3:5432/dengue"
 
 # PSI thresholds
 PSI_WARN  = 0.10
@@ -276,6 +276,8 @@ def load_baseline() -> tuple[np.ndarray, pd.DataFrame]:
                 text("SELECT * FROM gold.subzone_features WHERE date <= '2018-12-31'"),
                 conn
             )
+        if len(scores) == 0:
+            raise ValueError("empty baseline table")
         print(f"[load] Baseline from Postgres — {len(scores):,} scores")
         return scores["score"].values, features
 
@@ -307,6 +309,8 @@ def load_recent_predictions(lookback_days: int = 14) -> tuple[np.ndarray, pd.Dat
                 text(f"SELECT * FROM gold.subzone_features WHERE date >= '{cutoff.date()}'"),
                 conn
             )
+        if len(scores) == 0:
+            raise ValueError("empty predictions table")
         print(f"[load] Recent predictions from Postgres — {len(scores):,} scores")
         return scores["score"].values, features
 
