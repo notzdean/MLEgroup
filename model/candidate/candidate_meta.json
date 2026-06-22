@@ -1,19 +1,19 @@
 {
   "model_type": "xgboost",
   "val_metrics": {
-    "val_recall": 0.9949,
-    "val_precision": 0.1918,
-    "val_f1": 0.3216,
-    "val_auc_roc": 0.8424
+    "val_recall": 0.9666,
+    "val_precision": 0.2246,
+    "val_f1": 0.3646,
+    "val_auc_roc": 0.8509
   },
   "params": {
-    "n_estimators": 196,
+    "n_estimators": 107,
     "max_depth": 3,
-    "learning_rate": 0.01011091701847535,
-    "subsample": 0.8067795941644751,
-    "colsample_bytree": 0.6446234862031466,
-    "min_child_weight": 8,
-    "scale_pos_weight": 9.070647922488893
+    "learning_rate": 0.02069773850229683,
+    "subsample": 0.7174922301909832,
+    "colsample_bytree": 0.8904855091791609,
+    "min_child_weight": 6,
+    "scale_pos_weight": 6.231500750598727
   },
   "features": [
     "rainfall_lag1w",
