@@ -48,7 +48,6 @@ htmlcov/
 
 # ML / data
 *.pkl
-*.joblib
 *.h5
 *.parquet
 mlruns/

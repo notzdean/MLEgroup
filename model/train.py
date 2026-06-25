@@ -6,9 +6,12 @@ Model training: XGBoost + LightGBM with Optuna HPT.
 
 Reads : data/gold/subzone_features.parquet
 Writes: MLflow experiment runs + Candidate model in MLflow Registry
-        model/candidate/model.xgb (or model.lgb)           — raw booster
-        model/candidate/best_model_calibrated.joblib        — calibrated wrapper
-        model/candidate/candidate_meta.json
+        model/candidate/model.xgb                           — raw XGBoost booster
+        model/candidate/model.lgb                           — raw LightGBM booster
+        model/candidate/model_xgboost_calibrated.joblib     — XGBoost calibrated wrapper
+        model/candidate/model_lightgbm_calibrated.joblib    — LightGBM calibrated wrapper
+        model/candidate/best_model_calibrated.joblib        — alias → winning model
+        model/candidate/candidate_meta.json                 — all_models block included
 
 Pipeline
 --------
@@ -19,7 +22,7 @@ Pipeline
     Class imbalance handled via tuned scale_pos_weight (1–10×), not SMOTE
 5.  Train final XGBoost + LightGBM on full raw training set with best params
 6.  Probability calibration (Platt/sigmoid) on Val-calib slice
-7.  Threshold calibration on Val-thresh — max precision s.t. recall ≥ 0.70
+7.  Threshold calibration on Val-thresh — max precision s.t. recall ≥ 0.80
 8.  Threshold sensitivity check on Test
 9.  Log all runs to MLflow
 10. Register best model (selected by precision at recall floor) as Candidate
@@ -81,7 +84,7 @@ LABEL = "label"
 # ── hyperparameters ───────────────────────────────────────────────────────────
 N_OPTUNA_TRIALS = 150
 N_CV_FOLDS      = 5
-RECALL_TARGET   = 0.70
+RECALL_TARGET   = 0.80
 F2_BETA         = 2.0   # CV objective: F-beta with beta=2 (recall weighted 2× precision)
 
 MLFLOW_TRACKING_URI = "http://localhost:5000"
@@ -246,6 +249,7 @@ def select_threshold(clf, X: np.ndarray, y: np.ndarray,
     Pick the operating threshold from the PR curve on val_thresh:
     maximise precision subject to recall >= recall_target.
     Falls back to closest-to-target recall if target is unreachable.
+    Default recall_target is 0.80 (RECALL_TARGET constant).
     """
     from sklearn.metrics import precision_recall_curve
 
@@ -387,6 +391,9 @@ def main():
         "threshold":  None,
         "raw_model":  None,
     }
+    # Keep a record of every model type that was trained so evaluate.py
+    # can load and compare all candidates, not just the winner.
+    all_runs: dict = {}  # model_type -> full run dict
 
     for model_type in ["xgboost", "lightgbm"]:
         print(f"\n[optuna] Tuning {model_type} — {N_OPTUNA_TRIALS} trials "
@@ -442,17 +449,20 @@ def main():
         log_to_mlflow(model, model_type, best_params, val_metrics)
 
         # ── update best run ───────────────────────────────────────────────────
+        run_record = {
+            "precision":   val_prec,
+            "recall":      val_rec,
+            "model":       cal_model,
+            "model_type":  model_type,
+            "params":      best_params,
+            "threshold":   thr,
+            "raw_model":   model,
+            "metrics":     val_metrics,
+            "sensitivity": sens,
+        }
+        all_runs[model_type] = run_record
         if val_prec > best_run["precision"]:
-            best_run = {
-                "precision":  val_prec,
-                "model":      cal_model,
-                "model_type": model_type,
-                "params":     best_params,
-                "threshold":  thr,
-                "raw_model":  model,
-                "metrics":    val_metrics,
-                "sensitivity": sens,
-            }
+            best_run = run_record
 
     print(f"\n[best] {best_run['model_type']} — "
           f"val precision={best_run['precision']:.4f} "
@@ -462,21 +472,27 @@ def main():
     print("\n[corr] Feature ~ label correlation (diagnostic cross-check vs SHAP)")
     corr_dict = feature_label_correlation(splits["train"], FEATURES, LABEL)
 
-    # ── save best model ───────────────────────────────────────────────────────
+    # ── save all models ───────────────────────────────────────────────────────
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Native format — raw booster (no calibration layer, SHAP-compatible)
-    if best_run["model_type"] == "xgboost":
-        best_run["raw_model"].save_model(MODEL_DIR / "model.xgb")
-    else:
-        best_run["raw_model"].booster_.save_model(str(MODEL_DIR / "model.lgb"))
+    for mt, run in all_runs.items():
+        # Native format — raw booster (SHAP-compatible, no calibration layer)
+        if mt == "xgboost":
+            run["raw_model"].save_model(MODEL_DIR / "model.xgb")
+        else:
+            run["raw_model"].booster_.save_model(str(MODEL_DIR / "model.lgb"))
 
-    # Calibrated wrapper — the actual scoring artifact (threshold applies to this)
+        # Calibrated wrapper per model type — evaluate.py loads these for comparison
+        import joblib
+        joblib.dump(run["model"], MODEL_DIR / f"model_{mt}_calibrated.joblib")
+
+    # Backwards-compatible alias pointing at the winning model
     import joblib
     joblib.dump(best_run["model"], MODEL_DIR / "best_model_calibrated.joblib")
 
     # Metadata
     meta = {
+        # ── best model (primary artefact) ─────────────────────────────────────
         "model_type":               best_run["model_type"],
         "calibrated_threshold":     round(best_run["threshold"], 4),
         "calibration_method":       "sigmoid",
@@ -491,6 +507,22 @@ def main():
         ),
         "val_metrics":              best_run["metrics"],
         "params":                   best_run["params"],
+        # ── per-model records (all candidates) ────────────────────────────────
+        # evaluate.py reads this to load + compare every trained model.
+        "all_models": {
+            mt: {
+                "calibrated_threshold": round(run["threshold"], 4),
+                "val_precision_at_thr": round(run["precision"], 4),
+                "val_recall_at_thr":    round(run["recall"], 4),
+                "val_metrics":          run["metrics"],
+                "params":               run["params"],
+                "threshold_sensitivity": run["sensitivity"],
+                "calibrated_joblib":    f"model_{mt}_calibrated.joblib",
+                "raw_model_file":       "model.xgb" if mt == "xgboost" else "model.lgb",
+            }
+            for mt, run in all_runs.items()
+        },
+        # ── pipeline / split metadata ──────────────────────────────────────────
         "features":                 FEATURES,
         "f2_beta":                  F2_BETA,
         "recall_target":            RECALL_TARGET,

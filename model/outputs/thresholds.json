@@ -1,0 +1,5 @@
+{
+  "xgb_threshold": 0.8054966330528259,
+  "lgb_threshold": 0.5380934697509857,
+  "recall_floor": 0.8
+}

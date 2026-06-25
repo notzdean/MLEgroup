@@ -1,6 +1,6 @@
 {
-  "model_type": "lightgbm",
-  "calibrated_threshold": 0.1869,
+  "model_type": "xgboost",
+  "calibrated_threshold": 0.1181,
   "calibration_method": "sigmoid",
   "features": [
     "rainfall_lag1w",
@@ -18,94 +18,192 @@
   ],
   "val_metrics": {
     "split": "Val",
-    "threshold": 0.1869,
+    "threshold": 0.1181,
     "n_rows": 4658,
     "n_positive": 779,
-    "recall": 0.6983,
-    "precision": 0.4377,
-    "f1": 0.5381,
-    "auc_roc": 0.8484,
-    "pr_auc": 0.5748,
-    "tp": 544,
-    "fp": 699,
-    "tn": 3180,
-    "fn": 235
+    "recall": 0.7985,
+    "precision": 0.3922,
+    "f1": 0.526,
+    "auc_roc": 0.8474,
+    "pr_auc": 0.5744,
+    "tp": 622,
+    "fp": 964,
+    "tn": 2915,
+    "fn": 157
   },
   "test_metrics": {
     "split": "Test",
-    "threshold": 0.1869,
+    "threshold": 0.1181,
     "n_rows": 6850,
     "n_positive": 2003,
-    "recall": 0.8897,
-    "precision": 0.4876,
-    "f1": 0.6299,
+    "recall": 0.9481,
+    "precision": 0.4576,
+    "f1": 0.6173,
     "auc_roc": 0.8453,
-    "pr_auc": 0.6662,
-    "tp": 1782,
-    "fp": 1873,
-    "tn": 2974,
-    "fn": 221
+    "pr_auc": 0.6612,
+    "tp": 1899,
+    "fp": 2251,
+    "tn": 2596,
+    "fn": 104
   },
   "oot_metrics": {
     "split": "OOT",
-    "threshold": 0.1869,
+    "threshold": 0.1181,
     "n_rows": 7398,
     "n_positive": 1901,
-    "recall": 0.8643,
-    "precision": 0.4269,
-    "f1": 0.5715,
-    "auc_roc": 0.7963,
-    "pr_auc": 0.549,
-    "tp": 1643,
-    "fp": 2206,
-    "tn": 3291,
-    "fn": 258
+    "recall": 0.9032,
+    "precision": 0.3831,
+    "f1": 0.538,
+    "auc_roc": 0.7932,
+    "pr_auc": 0.5321,
+    "tp": 1717,
+    "fp": 2765,
+    "tn": 2732,
+    "fn": 184
   },
-  "psi": 0.0057,
+  "all_model_metrics": {
+    "xgboost": {
+      "calibrated_threshold": 0.1181,
+      "val": {
+        "split": "Val",
+        "threshold": 0.1181,
+        "n_rows": 4658,
+        "n_positive": 779,
+        "recall": 0.7985,
+        "precision": 0.3922,
+        "f1": 0.526,
+        "auc_roc": 0.8474,
+        "pr_auc": 0.5744,
+        "tp": 622,
+        "fp": 964,
+        "tn": 2915,
+        "fn": 157
+      },
+      "test": {
+        "split": "Test",
+        "threshold": 0.1181,
+        "n_rows": 6850,
+        "n_positive": 2003,
+        "recall": 0.9481,
+        "precision": 0.4576,
+        "f1": 0.6173,
+        "auc_roc": 0.8453,
+        "pr_auc": 0.6612,
+        "tp": 1899,
+        "fp": 2251,
+        "tn": 2596,
+        "fn": 104
+      },
+      "oot": {
+        "split": "OOT",
+        "threshold": 0.1181,
+        "n_rows": 7398,
+        "n_positive": 1901,
+        "recall": 0.9032,
+        "precision": 0.3831,
+        "f1": 0.538,
+        "auc_roc": 0.7932,
+        "pr_auc": 0.5321,
+        "tp": 1717,
+        "fp": 2765,
+        "tn": 2732,
+        "fn": 184
+      }
+    },
+    "lightgbm": {
+      "calibrated_threshold": 0.1056,
+      "val": {
+        "split": "Val",
+        "threshold": 0.1056,
+        "n_rows": 4658,
+        "n_positive": 779,
+        "recall": 0.7985,
+        "precision": 0.389,
+        "f1": 0.5231,
+        "auc_roc": 0.8477,
+        "pr_auc": 0.5682,
+        "tp": 622,
+        "fp": 977,
+        "tn": 2902,
+        "fn": 157
+      },
+      "test": {
+        "split": "Test",
+        "threshold": 0.1056,
+        "n_rows": 6850,
+        "n_positive": 2003,
+        "recall": 0.9571,
+        "precision": 0.4532,
+        "f1": 0.6151,
+        "auc_roc": 0.8474,
+        "pr_auc": 0.6647,
+        "tp": 1917,
+        "fp": 2313,
+        "tn": 2534,
+        "fn": 86
+      },
+      "oot": {
+        "split": "OOT",
+        "threshold": 0.1056,
+        "n_rows": 7398,
+        "n_positive": 1901,
+        "recall": 0.9058,
+        "precision": 0.3774,
+        "f1": 0.5328,
+        "auc_roc": 0.795,
+        "pr_auc": 0.536,
+        "tp": 1722,
+        "fp": 2841,
+        "tn": 2656,
+        "fn": 179
+      }
+    }
+  },
+  "psi": 0.0,
   "psi_flag": "stable",
   "threshold_sensitivity": [
     {
       "delta": -0.05,
-      "threshold": 0.1369,
-      "recall": 0.9236,
-      "precision": 0.4635
+      "threshold": 0.0681,
+      "recall": 0.9705,
+      "precision": 0.4369
     },
     {
       "delta": -0.02,
-      "threshold": 0.1669,
-      "recall": 0.9131,
-      "precision": 0.4726
+      "threshold": 0.0981,
+      "recall": 0.9481,
+      "precision": 0.4576
     },
     {
       "delta": 0.0,
-      "threshold": 0.1869,
-      "recall": 0.8897,
-      "precision": 0.4876
+      "threshold": 0.1181,
+      "recall": 0.9481,
+      "precision": 0.4576
     },
     {
       "delta": 0.02,
-      "threshold": 0.2069,
-      "recall": 0.8293,
-      "precision": 0.5375
+      "threshold": 0.1381,
+      "recall": 0.9406,
+      "precision": 0.4567
     },
     {
       "delta": 0.05,
-      "threshold": 0.2369,
-      "recall": 0.7923,
-      "precision": 0.5555
+      "threshold": 0.1681,
+      "recall": 0.9406,
+      "precision": 0.4623
     }
   ],
   "shap_importance": {
-    "population": 0.6584,
-    "cluster_count_rolling2w": 0.5101,
-    "cluster_count_rolling4w": 0.3313,
-    "recent_cases_rolling2w": 0.329,
-    "population_density": 0.2554,
-    "area_km2": 0.1902,
-    "elderly_pct": 0.149,
-    "recent_cases_rolling4w": 0.1352,
-    "vulnerability_index": 0.069,
-    "rainfall_lag1w": 0.0092,
+    "population": 0.5337,
+    "cluster_count_rolling2w": 0.2039,
+    "cluster_count_rolling4w": 0.2022,
+    "population_density": 0.1618,
+    "recent_cases_rolling2w": 0.1092,
+    "area_km2": 0.0845,
+    "vulnerability_index": 0.0584,
+    "elderly_pct": 0.0325,
+    "recent_cases_rolling4w": 0.0094,
+    "rainfall_lag1w": 0.0,
     "rainfall_lag2w": 0.0,
     "rainfall_lag4w": 0.0
   },
@@ -131,11 +229,11 @@
   },
   "promoted": true,
   "training_val_metrics": {
-    "val_recall": 0.6983,
-    "val_precision": 0.4377,
-    "val_f1": 0.5381,
-    "val_auc_roc": 0.8484,
-    "val_pr_auc": 0.5748
+    "val_recall": 0.7985,
+    "val_precision": 0.3922,
+    "val_f1": 0.526,
+    "val_auc_roc": 0.8474,
+    "val_pr_auc": 0.5744
   },
   "note_oot": "OOT period (Jan\u2013Nov 2020) covers the DENV-3 serotype shift outbreak (35,000+ cases). Performance degradation is expected and documented as a concept drift case study, not a model failure."
 }

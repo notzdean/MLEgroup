@@ -4,9 +4,12 @@ model/evaluate.py
 CS611 MLE Group Project — Dengue Outbreak Risk Prediction
 Model evaluation: Val + Test set + OOT + promotion gate.
 
-Reads : model/candidate/model.xgb (or model.lgb)           — raw booster (for SHAP)
-        model/candidate/best_model_calibrated.joblib        — calibrated wrapper
-        model/candidate/candidate_meta.json                 — includes calibrated_threshold
+Reads : model/candidate/model.xgb                           — raw XGBoost booster
+        model/candidate/model.lgb                           — raw LightGBM booster
+        model/candidate/model_xgboost_calibrated.joblib     — XGBoost calibrated wrapper
+        model/candidate/model_lightgbm_calibrated.joblib    — LightGBM calibrated wrapper
+        model/candidate/best_model_calibrated.joblib        — fallback alias
+        model/candidate/candidate_meta.json                 — all_models block read
         data/gold/subzone_features.parquet
 Writes: model/evaluation_report.json
         MLflow: promotes Candidate → Production if gate passes
@@ -69,44 +72,67 @@ MODEL_NAME          = "dengue_cluster_model"
 def load_candidate():
     """
     Returns:
-        raw_model   — native XGB/LGB estimator (used for SHAP only)
-        cal_model   — CalibratedClassifierCV wrapper (used for all predictions)
-        threshold   — calibrated decision threshold from candidate_meta.json
-        model_type  — "xgboost" or "lightgbm"
+        models      — dict {model_type: (raw_model, cal_model, threshold)}
+        best_type   — model_type string of the winning model
         features    — list of feature names
         meta        — full metadata dict
+
+    Loads every model listed in meta["all_models"] so evaluate.py can
+    compare XGBoost and LightGBM side by side.  Falls back to the legacy
+    single-model layout (no "all_models" key) for backwards compatibility.
     """
     meta_path = MODEL_DIR / "candidate_meta.json"
     with open(meta_path) as f:
         meta = json.load(f)
 
-    model_type = meta["model_type"]
-    features   = meta["features"]
-    threshold  = meta.get("calibrated_threshold", 0.5)
+    features  = meta["features"]
+    best_type = meta["model_type"]
 
-    # Raw model — for SHAP and fallback native-format loading
-    if model_type == "xgboost":
-        import xgboost as xgb
-        raw_model = xgb.XGBClassifier()
-        raw_model.load_model(MODEL_DIR / "model.xgb")
+    def _load_raw(mt):
+        if mt == "xgboost":
+            import xgboost as xgb
+            m = xgb.XGBClassifier()
+            m.load_model(MODEL_DIR / "model.xgb")
+        else:
+            import lightgbm as lgb
+            m = lgb.Booster(model_file=str(MODEL_DIR / "model.lgb"))
+        return m
+
+    def _load_cal(mt, meta_entry):
+        # Try per-model joblib first (new format), fall back to best alias
+        specific = MODEL_DIR / meta_entry.get("calibrated_joblib",
+                                               f"model_{mt}_calibrated.joblib")
+        alias    = MODEL_DIR / "best_model_calibrated.joblib"
+        path = specific if specific.exists() else alias
+        if path.exists():
+            cal = joblib.load(path)
+            print(f"[load] {mt} calibrated model: {path.name}")
+            return cal
+        print(f"[load] ⚠ No calibrated joblib for {mt}; falling back to raw model")
+        return _load_raw(mt)
+
+    # ── new format: all_models block ─────────────────────────────────────────
+    if "all_models" in meta:
+        models = {}
+        for mt, entry in meta["all_models"].items():
+            raw = _load_raw(mt)
+            cal = _load_cal(mt, entry)
+            thr = entry["calibrated_threshold"]
+            models[mt] = (raw, cal, thr)
+            print(f"[load] {mt:10s}  threshold={thr:.4f}")
+
+    # ── legacy format: single best model only ────────────────────────────────
     else:
-        import lightgbm as lgb
-        raw_model = lgb.Booster(model_file=str(MODEL_DIR / "model.lgb"))
+        print("[load] No all_models block found — loading best model only")
+        mt  = best_type
+        raw = _load_raw(mt)
+        cal = _load_cal(mt, {"calibrated_joblib": "best_model_calibrated.joblib"})
+        thr = meta.get("calibrated_threshold", 0.5)
+        models = {mt: (raw, cal, thr)}
+        print(f"[load] {mt:10s}  threshold={thr:.4f}")
 
-    # Calibrated wrapper — the actual scoring artifact
-    joblib_path = MODEL_DIR / "best_model_calibrated.joblib"
-    if joblib_path.exists():
-        cal_model = joblib.load(joblib_path)
-        print(f"[load] Calibrated model: {joblib_path.name}")
-    else:
-        # Backwards compatibility: if no calibrated joblib, fall back to raw model
-        print(f"[load] ⚠ No calibrated joblib found; falling back to raw model "
-              f"(threshold may not transfer as reliably).")
-        cal_model = raw_model
-
-    print(f"[load] Model type      : {model_type}")
-    print(f"[load] Threshold       : {threshold}")
-    return raw_model, cal_model, threshold, model_type, features, meta
+    print(f"[load] Best model: {best_type}")
+    return models, best_type, features, meta
 
 
 def load_splits(features: list):
@@ -337,50 +363,73 @@ def main():
     print("Model Evaluation — Val + Test + OOT + Promotion Gate")
     print("=" * 60)
 
-    # ── 1. load candidate ─────────────────────────────────────────────────────
-    raw_model, cal_model, threshold, model_type, features, meta = load_candidate()
+    # ── 1. load all candidate models ──────────────────────────────────────────
+    models, best_type, features, meta = load_candidate()
     val, test, oot = load_splits(features)
 
     X_val  = val[features].values;   y_val  = val["label"].values
     X_test = test[features].values;  y_test = test["label"].values
     X_oot  = oot[features].values;   y_oot  = oot["label"].values
 
-    # ── 2. metrics at calibrated threshold ───────────────────────────────────
-    val_metrics  = compute_metrics(cal_model, X_val,  y_val,  "Val",  threshold)
-    test_metrics = compute_metrics(cal_model, X_test, y_test, "Test", threshold)
-    oot_metrics  = compute_metrics(cal_model, X_oot,  y_oot,  "OOT",  threshold)
+    # ── 2. evaluate every model on Val / Test / OOT ───────────────────────────
+    all_metrics: dict = {}   # model_type -> {val, test, oot}
 
-    # ── 3. PSI — calibrated score distribution shift (test → OOT) ────────────
-    test_scores = cal_model.predict_proba(X_test)[:, 1]
-    oot_scores  = cal_model.predict_proba(X_oot)[:, 1]
+    for mt, (raw_model, cal_model, threshold) in models.items():
+        print(f"\n{'='*40}")
+        print(f"Evaluating: {mt.upper()}  (threshold={threshold:.4f})")
+        print(f"{'='*40}")
+        all_metrics[mt] = {
+            "val":  compute_metrics(cal_model, X_val,  y_val,  "Val",  threshold),
+            "test": compute_metrics(cal_model, X_test, y_test, "Test", threshold),
+            "oot":  compute_metrics(cal_model, X_oot,  y_oot,  "OOT",  threshold),
+        }
+
+    # ── 3. PSI, SHAP, sensitivity, correlation — best model only ─────────────
+    best_raw, best_cal, best_thr = models[best_type]
+
+    test_scores = best_cal.predict_proba(X_test)[:, 1]
+    oot_scores  = best_cal.predict_proba(X_oot)[:, 1]
     psi_val     = compute_psi(test_scores, oot_scores)
     psi_flag    = ("stable"           if psi_val < 0.1
                    else "minor shift" if psi_val < 0.2
                    else "significant drift")
-    print(f"\n[psi] Score PSI (test → OOT): {psi_val:.4f} — {psi_flag}")
+    print(f"\n[psi] {best_type} — test→OOT: {psi_val:.4f} — {psi_flag}")
 
-    # ── 4. SHAP — must use raw tree model, not calibrated wrapper ─────────────
-    shap_dict = compute_shap(raw_model, model_type, X_test, features)
+    shap_dict = compute_shap(best_raw, best_type, X_test, features)
 
-    # ── 5. threshold sensitivity ──────────────────────────────────────────────
-    print(f"\n[sensitivity] Threshold stability on Test")
-    sens = threshold_sensitivity(cal_model, X_test, y_test, threshold)
+    print(f"\n[sensitivity] Threshold stability on Test ({best_type})")
+    sens = threshold_sensitivity(best_cal, X_test, y_test, best_thr)
 
-    # ── 6. feature ~ label correlation cross-check ────────────────────────────
     corr_dict = feature_label_correlation(features)
 
-    # ── 7. promotion gate ─────────────────────────────────────────────────────
-    gates, all_pass = evaluate_gate(test_metrics, oot_metrics, shap_dict)
+    # ── 4. promotion gate — based on best model's Test / OOT metrics ──────────
+    gates, all_pass = evaluate_gate(
+        all_metrics[best_type]["test"],
+        all_metrics[best_type]["oot"],
+        shap_dict,
+    )
 
-    # ── 8. build report ───────────────────────────────────────────────────────
+    # ── 5. build report ───────────────────────────────────────────────────────
+    # Flat per-split metrics for the best model (kept for backwards compat)
     report = {
-        "model_type":                  model_type,
-        "calibrated_threshold":        threshold,
+        "model_type":                  best_type,
+        "calibrated_threshold":        best_thr,
         "calibration_method":          meta.get("calibration_method", "sigmoid"),
         "features":                    features,
-        "val_metrics":                 val_metrics,
-        "test_metrics":                test_metrics,
-        "oot_metrics":                 oot_metrics,
+        # best model metrics (backwards-compatible keys)
+        "val_metrics":                 all_metrics[best_type]["val"],
+        "test_metrics":                all_metrics[best_type]["test"],
+        "oot_metrics":                 all_metrics[best_type]["oot"],
+        # all-model comparison block (new)
+        "all_model_metrics": {
+            mt: {
+                "calibrated_threshold": models[mt][2],
+                "val":  splits_m["val"],
+                "test": splits_m["test"],
+                "oot":  splits_m["oot"],
+            }
+            for mt, splits_m in all_metrics.items()
+        },
         "psi":                         psi_val,
         "psi_flag":                    psi_flag,
         "threshold_sensitivity":       sens,
@@ -401,9 +450,24 @@ def main():
         json.dump(report, f, indent=2)
     print(f"\n[save] Report → {report_path.name}")
 
-    # ── 9. MLflow promotion ───────────────────────────────────────────────────
+    # ── 6. summary table ──────────────────────────────────────────────────────
+    print("\n[summary] All models — Val / Test / OOT")
+    header = f"  {'Model':10s}  {'Split':5s}  {'Thr':6s}  {'Recall':7s}  "
+    header += f"{'Prec':7s}  {'F1':6s}  {'AUC':6s}  {'PR-AUC':7s}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for mt, splits_m in all_metrics.items():
+        thr = models[mt][2]
+        for split_name, m in splits_m.items():
+            marker = " ← best" if mt == best_type else ""
+            print(f"  {mt:10s}  {m['split']:5s}  {thr:.3f}  "
+                  f"{m['recall']:.4f}   {m['precision']:.4f}   "
+                  f"{m['f1']:.4f}  {m['auc_roc']:.4f}  "
+                  f"{m['pr_auc']:.4f}{marker if split_name == 'test' else ''}")
+
+    # ── 7. MLflow promotion ───────────────────────────────────────────────────
     if all_pass:
-        promote_to_production(model_type)
+        promote_to_production(best_type)
         print("\n[done] Model promoted to Production.")
     else:
         print("\n[done] Gate failed — existing Production model unchanged.")
